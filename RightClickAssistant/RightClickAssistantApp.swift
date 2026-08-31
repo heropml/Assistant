@@ -8,9 +8,10 @@ struct RightClickAssistantApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
-                .frame(minWidth: 720, minHeight: 500)
+                .frame(minWidth: 820, minHeight: 600)
+                .onOpenURL { store.handleExecutionURL($0) }
         }
-        .defaultSize(width: 780, height: 560)
+        .defaultSize(width: 920, height: 700)
         .windowResizability(.contentMinSize)
 
         Settings {

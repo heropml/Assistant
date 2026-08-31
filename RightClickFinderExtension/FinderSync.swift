@@ -1,16 +1,17 @@
 import Cocoa
 import FinderSync
+import OSLog
 
-private enum MenuAction {
-    case builtIn(QuickAction)
-    case application(ApplicationAction)
-}
+private let finderLog = Logger(
+    subsystem: "com.local.RightClickAssistant.FinderExtension",
+    category: "menu"
+)
 
 private final class MenuActionContext: NSObject {
-    let action: MenuAction
+    let action: ConfiguredAction
     let urls: [URL]
 
-    init(action: MenuAction, urls: [URL]) {
+    init(action: ConfiguredAction, urls: [URL]) {
         self.action = action
         self.urls = urls
     }
@@ -21,7 +22,16 @@ final class FinderSync: FIFinderSync {
 
     override init() {
         super.init()
-        controller.directoryURLs = [URL(fileURLWithPath: "/", isDirectory: true)]
+        // Some macOS releases don't deliver contextual-menu callbacks when only
+        // the filesystem root is registered. Keep the broad root and explicitly
+        // register the locations where Finder browsing normally happens.
+        controller.directoryURLs = Set([
+            URL(fileURLWithPath: "/", isDirectory: true),
+            FileManager.default.homeDirectoryForCurrentUser,
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/Volumes", isDirectory: true),
+            URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+        ])
     }
 
     override var toolbarItemName: String { "右键助手" }
@@ -31,61 +41,118 @@ final class FinderSync: FIFinderSync {
     }
 
     override func menu(for menuKind: FIMenuKind) -> NSMenu? {
-        guard menuKind == .contextualMenuForItems || menuKind == .contextualMenuForContainer else {
+        guard menuKind == .contextualMenuForItems
+                || menuKind == .contextualMenuForContainer
+                || menuKind == .toolbarItemMenu else {
             return nil
         }
 
-        let builtInActions = SharedPreferences.enabledActions()
-        let applicationActions = SharedPreferences.applicationActions().filter(\.isEnabled)
-        guard !builtInActions.isEmpty || !applicationActions.isEmpty else { return nil }
-
-        let root = NSMenu(title: "右键助手")
-        let assistantItem = NSMenuItem(title: "右键助手", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "右键助手")
+        let isContainer = menuKind == .contextualMenuForContainer
         let urls = targetURLs(for: menuKind)
+        let configuration = SharedPreferences.configuration()
+        let applicable = configuration.actions.filter { $0.matches(urls: urls, isContainer: isContainer) }
+        finderLog.info(
+            "Building menu kind=\(menuKind.rawValue, privacy: .public) targets=\(urls.count, privacy: .public) applicable=\(applicable.count, privacy: .public)"
+        )
+        guard !applicable.isEmpty else { return nil }
 
-        for action in builtInActions {
-            let item = NSMenuItem(title: action.title, action: #selector(performAction(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = MenuActionContext(action: .builtIn(action), urls: urls)
-            item.image = NSImage(systemSymbolName: action.symbolName, accessibilityDescription: action.title)
-            submenu.addItem(item)
+        let favorites = configuration.showsFavoritesAtTopLevel
+            ? Array(applicable.filter(\.isFavorite).prefix(6))
+            : []
+        let favoriteIDs = Set(favorites.map(\.id))
+        let remaining = applicable.filter { !favoriteIDs.contains($0.id) }
+        let root = NSMenu(title: "右键助手")
+
+        for action in favorites {
+            root.addItem(menuItem(for: action, urls: urls))
         }
 
-        if !builtInActions.isEmpty && !applicationActions.isEmpty {
-            submenu.addItem(.separator())
+        if !favorites.isEmpty && !remaining.isEmpty {
+            root.addItem(.separator())
         }
 
-        for application in applicationActions {
-            let item = NSMenuItem(title: application.menuTitle, action: #selector(performAction(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = MenuActionContext(action: .application(application), urls: urls)
-            if let applicationURL = application.installedApplicationURL() {
-                item.image = NSWorkspace.shared.icon(forFile: applicationURL.path)
-            }
-            submenu.addItem(item)
+        if !remaining.isEmpty {
+            let assistantItem = NSMenuItem(title: "右键助手", action: nil, keyEquivalent: "")
+            assistantItem.image = NSImage(
+                systemSymbolName: "cursorarrow.click.2",
+                accessibilityDescription: "右键助手"
+            )
+            let submenu = buildSubmenu(actions: remaining, groups: configuration.groups, urls: urls)
+            root.addItem(assistantItem)
+            root.setSubmenu(submenu, for: assistantItem)
         }
-
-        root.addItem(assistantItem)
-        root.setSubmenu(submenu, for: assistantItem)
         return root
     }
 
     @objc private func performAction(_ sender: NSMenuItem) {
         guard let context = sender.representedObject as? MenuActionContext else { return }
 
-        switch context.action {
-        case .builtIn(.copyPath):
-            copy(context.urls.map(\.path).joined(separator: "\n"))
-        case .builtIn(.copyName):
-            copy(context.urls.map(\.lastPathComponent).joined(separator: "\n"))
-        case .builtIn(.newTextFile):
-            createTextFile(in: workingDirectory(for: context.urls.first))
-        case .builtIn(.openInTerminal):
-            openTerminal(at: workingDirectory(for: context.urls.first))
-        case let .application(application):
-            open(context.urls, with: application)
+        if context.action.kind == .builtIn {
+            switch context.action.builtInOperation {
+            case .copyPath:
+                copy(context.urls.map(\.path).joined(separator: "\n"))
+                return
+            case .copyName:
+                copy(context.urls.map(\.lastPathComponent).joined(separator: "\n"))
+                return
+            case .cut, .paste, nil:
+                break
+            }
         }
+
+        guard let url = SharedPreferences.executionURL(actionID: context.action.id, urls: context.urls),
+              NSWorkspace.shared.open(url) else {
+            Self.showError("无法执行动作", detail: "右键助手主程序未安装或无法启动。")
+            return
+        }
+    }
+
+    private func buildSubmenu(
+        actions: [ConfiguredAction],
+        groups: [ActionGroup],
+        urls: [URL]
+    ) -> NSMenu {
+        let submenu = NSMenu(title: "右键助手")
+        let groupedIDs = Set(groups.map(\.id))
+        let ungrouped = actions.filter { action in
+            guard let groupID = action.groupID else { return true }
+            return !groupedIDs.contains(groupID)
+        }
+
+        for action in ungrouped {
+            submenu.addItem(menuItem(for: action, urls: urls))
+        }
+
+        if !ungrouped.isEmpty && groups.contains(where: { group in actions.contains { $0.groupID == group.id } }) {
+            submenu.addItem(.separator())
+        }
+
+        for group in groups {
+            let groupActions = actions.filter { $0.groupID == group.id }
+            guard !groupActions.isEmpty else { continue }
+            let groupItem = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
+            groupItem.image = NSImage(systemSymbolName: group.symbolName, accessibilityDescription: group.title)
+            groupItem.isEnabled = false
+            submenu.addItem(groupItem)
+            for action in groupActions {
+                submenu.addItem(menuItem(for: action, urls: urls))
+            }
+        }
+        return submenu
+    }
+
+    private func menuItem(for action: ConfiguredAction, urls: [URL]) -> NSMenuItem {
+        let item = NSMenuItem(title: action.title, action: #selector(performAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = MenuActionContext(action: action, urls: urls)
+        if (action.kind == .application || action.kind == .terminal),
+           let applicationURL = action.installedApplicationURL() {
+            item.image = NSWorkspace.shared.icon(forFile: applicationURL.path)
+        } else {
+            item.image = NSImage(systemSymbolName: action.symbolName, accessibilityDescription: action.title)
+                ?? NSImage(systemSymbolName: action.kind.symbolName, accessibilityDescription: action.title)
+        }
+        return item
     }
 
     private func targetURLs(for menuKind: FIMenuKind) -> [URL] {
@@ -101,67 +168,10 @@ final class FinderSync: FIFinderSync {
         return []
     }
 
-    private func workingDirectory(for url: URL?) -> URL {
-        guard let url else { return FileManager.default.homeDirectoryForCurrentUser }
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            return url
-        }
-        return url.deletingLastPathComponent()
-    }
-
     private func copy(_ value: String) {
         guard !value.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
-    }
-
-    private func createTextFile(in directory: URL) {
-        let manager = FileManager.default
-        var candidate = directory.appendingPathComponent("未命名文稿.txt")
-        var index = 2
-        while manager.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent("未命名文稿 \(index).txt")
-            index += 1
-        }
-
-        do {
-            try Data().write(to: candidate, options: .atomic)
-            NSWorkspace.shared.activateFileViewerSelecting([candidate])
-        } catch {
-            Self.showError("无法新建文本文件", detail: error.localizedDescription)
-        }
-    }
-
-    private func open(_ urls: [URL], with application: ApplicationAction) {
-        guard !urls.isEmpty else { return }
-        guard let applicationURL = application.installedApplicationURL() else {
-            Self.showError("未找到\(application.applicationName)", detail: "应用可能已移动或删除，请在右键助手中重新添加。")
-            return
-        }
-
-        NSWorkspace.shared.open(
-            urls,
-            withApplicationAt: applicationURL,
-            configuration: NSWorkspace.OpenConfiguration()
-        ) { _, error in
-            if let error {
-                FinderSync.showError("无法使用\(application.applicationName)打开", detail: error.localizedDescription)
-            }
-        }
-    }
-
-    private func openTerminal(at directory: URL) {
-        let terminalURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        NSWorkspace.shared.open(
-            [directory],
-            withApplicationAt: terminalURL,
-            configuration: NSWorkspace.OpenConfiguration()
-        ) { _, error in
-            if let error {
-                FinderSync.showError("无法打开终端", detail: error.localizedDescription)
-            }
-        }
     }
 
     private static func showError(_ message: String, detail: String) {

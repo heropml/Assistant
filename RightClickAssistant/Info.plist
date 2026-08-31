@@ -10,8 +10,21 @@
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.local.RightClickAssistant.execute</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>rightclickassistant</string>
+			</array>
+		</dict>
+	</array>
     <key>CFBundleName</key>
     <string>右键助手</string>
     <key>CFBundlePackageType</key>
