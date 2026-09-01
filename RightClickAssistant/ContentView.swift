@@ -6,12 +6,21 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var editingAction: ConfiguredAction?
     @State private var groupEditor: GroupEditorContext?
+    @State private var groupPendingDeletion: ActionGroup?
+    @State private var isShowingGroupDeleteConfirmation = false
     @State private var searchText = ""
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let issue = store.configurationLoadIssue {
+                configurationWarning(
+                    issue,
+                    recoveredFromBackup: store.recoveredConfigurationFromLastKnownGood
+                )
+                Divider()
+            }
             toolbar
             Divider()
             actionList
@@ -31,19 +40,30 @@ struct ContentView: View {
                 }
             }
         }
+        .confirmationDialog(
+            "删除分组“\(groupPendingDeletion?.title ?? "")”？",
+            isPresented: $isShowingGroupDeleteConfirmation
+        ) {
+            Button("删除分组", role: .destructive) {
+                guard let group = groupPendingDeletion else { return }
+                store.removeGroup(group)
+                groupPendingDeletion = nil
+            }
+            Button("取消", role: .cancel) { groupPendingDeletion = nil }
+        } message: {
+            Text("分组内的动作会保留，并移到未分组。")
+        }
     }
 
     private var header: some View {
         HStack(spacing: 16) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.blue.gradient)
-                Image(systemName: "cursorarrow.click.2")
-                    .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 58, height: 58)
-            .shadow(color: .blue.opacity(0.18), radius: 8, y: 4)
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 64, height: 64)
+                .shadow(color: .indigo.opacity(0.22), radius: 10, y: 5)
+                .accessibilityLabel("右键助手")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("右键助手")
@@ -100,6 +120,29 @@ struct ContentView: View {
         .background(.bar)
     }
 
+    private func configurationWarning(
+        _ issue: ConfigurationLoadIssue,
+        recoveredFromBackup: Bool
+    ) -> some View {
+        let message: String = switch issue {
+        case .corruptedData:
+            recoveredFromBackup
+                ? "配置数据损坏，已使用最近一次有效配置；原始数据已保留用于恢复。"
+                : "配置数据损坏且没有有效备份，已暂停全部动作；原始数据已保留用于恢复。"
+        case let .unsupportedVersion(version):
+            recoveredFromBackup
+                ? "配置来自较新的版本（v\(version)），当前版本未覆盖它；已使用最近一次有效配置。"
+                : "配置来自较新的版本（v\(version)）且没有兼容备份，已暂停全部动作以避免覆盖。"
+        }
+        return Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 10)
+            .background(.orange.opacity(0.08))
+    }
+
     private var addActionMenu: some View {
         Menu {
             Menu("基础动作") {
@@ -131,7 +174,7 @@ struct ContentView: View {
                     HStack {
                         Text("动作栈")
                             .font(.headline)
-                        Text("拖动任意动作可跨类型排序")
+                        Text(isSearching ? "清空搜索后可调整顺序" : "拖动任意动作可跨类型排序")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -152,6 +195,7 @@ struct ContentView: View {
                             ActionRow(
                                 action: action,
                                 groupTitle: groupTitle(for: action),
+                                allowsReordering: !isSearching,
                                 onEdit: { editingAction = action },
                                 onDropAction: { sourceID in store.move(actionID: sourceID, before: action.id) }
                             )
@@ -169,7 +213,7 @@ struct ContentView: View {
                 Text("菜单分组")
                     .font(.headline)
                 Spacer()
-                Text("未分组动作直接显示在“右键助手”子菜单中")
+                Text("拖动分组排序；未分组动作固定显示在最后")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -177,21 +221,42 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     ForEach(store.groups) { group in
                         Menu {
+                            Button("向前移动", systemImage: "arrow.left") {
+                                store.moveGroup(group, by: -1)
+                            }
+                            .disabled(!store.canMoveGroup(group, by: -1))
+                            Button("向后移动", systemImage: "arrow.right") {
+                                store.moveGroup(group, by: 1)
+                            }
+                            .disabled(!store.canMoveGroup(group, by: 1))
+                            Divider()
                             Button("编辑") {
                                 groupEditor = GroupEditorContext(group: group, isNew: false)
                             }
                             Divider()
                             Button("删除分组", role: .destructive) {
-                                store.removeGroup(group)
+                                groupPendingDeletion = group
+                                isShowingGroupDeleteConfirmation = true
                             }
                         } label: {
-                            Label(group.title, systemImage: group.symbolName)
+                            HStack(spacing: 6) {
+                                Image(systemName: "line.3.horizontal")
+                                    .foregroundStyle(.tertiary)
+                                Label(group.title, systemImage: group.symbolName)
+                            }
                                 .padding(.horizontal, 11)
                                 .padding(.vertical, 7)
                                 .background(.blue.opacity(0.08), in: Capsule())
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
+                        .draggable(group.id)
+                        .dropDestination(for: String.self) { identifiers, _ in
+                            guard let identifier = identifiers.first else { return false }
+                            store.moveGroup(groupID: identifier, before: group.id)
+                            return true
+                        }
+                        .help("拖动调整分组顺序，或点击选择前后移动")
                     }
                 }
             }
@@ -220,6 +285,10 @@ struct ContentView: View {
                 || action.kind.title.lowercased().contains(query)
                 || groupTitle(for: action).lowercased().contains(query)
         }
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func groupTitle(for action: ConfiguredAction) -> String {
@@ -281,8 +350,10 @@ private struct ActionRow: View {
     @EnvironmentObject private var store: ActionStore
     let action: ConfiguredAction
     let groupTitle: String
+    let allowsReordering: Bool
     let onEdit: () -> Void
     let onDropAction: (String) -> Void
+    @State private var isShowingDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -329,6 +400,7 @@ private struct ActionRow: View {
             }
             .buttonStyle(.borderless)
             .help(action.isFavorite ? "取消一级菜单直达" : "添加到一级菜单")
+            .accessibilityLabel(action.isFavorite ? "取消“\(action.title)”一级菜单直达" : "将“\(action.title)”添加到一级菜单")
 
             HStack(spacing: 2) {
                 moveButton("chevron.up", offset: -1)
@@ -339,13 +411,16 @@ private struct ActionRow: View {
             Menu {
                 Button("编辑", systemImage: "slider.horizontal.3", action: onEdit)
                 Divider()
-                Button("删除", systemImage: "trash", role: .destructive) { store.remove(action) }
+                Button("删除", systemImage: "trash", role: .destructive) {
+                    isShowingDeleteConfirmation = true
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .frame(width: 26, height: 26)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .accessibilityLabel("“\(action.title)”更多操作")
 
             Toggle("", isOn: Binding(
                 get: { action.isEnabled },
@@ -353,6 +428,7 @@ private struct ActionRow: View {
             ))
             .labelsHidden()
             .toggleStyle(.switch)
+            .accessibilityLabel("启用“\(action.title)”")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -363,9 +439,15 @@ private struct ActionRow: View {
         }
         .draggable(action.id)
         .dropDestination(for: String.self) { identifiers, _ in
-            guard let identifier = identifiers.first else { return false }
+            guard allowsReordering, let identifier = identifiers.first else { return false }
             onDropAction(identifier)
             return true
+        }
+        .confirmationDialog("删除动作“\(action.title)”？", isPresented: $isShowingDeleteConfirmation) {
+            Button("删除", role: .destructive) { store.remove(action) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作会立即写入 Finder 配置。")
         }
     }
 
@@ -416,8 +498,9 @@ private struct ActionRow: View {
                 .frame(width: 23, height: 23)
                 .contentShape(Rectangle())
         }
-        .disabled(!store.canMove(action, by: offset))
+        .disabled(!allowsReordering || !store.canMove(action, by: offset))
         .help(offset < 0 ? "上移" : "下移")
+        .accessibilityLabel(offset < 0 ? "上移“\(action.title)”" : "下移“\(action.title)”")
     }
 }
 
@@ -466,6 +549,7 @@ private struct ActionEditor: View {
                         value: $action.conditions.minimumSelectionCount,
                         in: 1...99
                     )
+                    .disabled(!hasItemContext)
                     Stepper(
                         maximumSelectionLabel,
                         value: Binding(
@@ -474,6 +558,12 @@ private struct ActionEditor: View {
                         ),
                         in: 0...99
                     )
+                    .disabled(!hasItemContext)
+                    Text(hasItemContext
+                         ? "选择数量和扩展名只用于文件或文件夹；Finder 空白处和工具栏未选择项目时不受这些条件限制。"
+                         : "当前动作只显示在 Finder 空白处和工具栏未选择项目时；选择数量与扩展名不适用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("作用目录") {
@@ -526,10 +616,16 @@ private struct ActionEditor: View {
         case .application, .terminal:
             Section(action.kind.title) {
                 LabeledContent("位置", value: action.targetPath ?? "未选择")
+                Button(action.installedApplicationURL() == nil ? "重新选择应用…" : "更换应用…") {
+                    chooseTargetApplication()
+                }
             }
         case .directory:
             Section("常用目录") {
                 LabeledContent("位置", value: action.targetPath ?? "未选择")
+                Button(targetDirectoryExists ? "更换目录…" : "重新选择目录…") {
+                    chooseTargetDirectory()
+                }
             }
         case .template:
             Section("文件模板") {
@@ -578,12 +674,29 @@ private struct ActionEditor: View {
         action.conditions.maximumSelectionCount.map { "最多选择 \($0) 项" } ?? "选择数量不设上限"
     }
 
+    private var hasItemContext: Bool {
+        action.conditions.allowsFiles || action.conditions.allowsFolders
+    }
+
+    private var targetDirectoryExists: Bool {
+        guard let targetPath = action.targetPath else { return false }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: targetPath, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
     private var validationMessage: String? {
         if action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "菜单名称不能为空。" }
         if !action.conditions.allowsFiles && !action.conditions.allowsFolders && !action.conditions.allowsContainer {
             return "至少选择一种显示位置。"
         }
-        if action.kind == .template && action.normalizedTemplateExtension.isEmpty { return "模板扩展名不能为空。" }
+        if action.kind == .template {
+            let title = action.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isUnsafePathComponent(title) { return "模板名称不能是 . 或 ..，也不能包含路径分隔符。" }
+            let fileExtension = action.normalizedTemplateExtension
+            if fileExtension.isEmpty { return "模板扩展名不能为空。" }
+            if isUnsafePathComponent(fileExtension) { return "模板扩展名不能是 . 或 ..，也不能包含路径分隔符。" }
+        }
         if (action.kind == .shell || action.kind == .appleScript)
             && (action.script ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "脚本内容不能为空。"
@@ -620,6 +733,61 @@ private struct ActionEditor: View {
         guard panel.runModal() == .OK, let path = panel.url?.path,
               !action.conditions.pathPrefixes.contains(path) else { return }
         action.conditions.pathPrefixes.append(path)
+    }
+
+    private func chooseTargetApplication() {
+        let oldTarget = action.targetPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let shouldRefreshTitle = oldTarget == nil
+            || oldTarget.map { action.title == automaticApplicationTitle(for: $0) } == true
+        let panel = NSOpenPanel()
+        panel.title = action.kind == .terminal ? "选择终端应用" : "选择打开文件的应用"
+        panel.prompt = "选择"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        action.targetPath = url.path
+        let bundle = Bundle(url: url)
+        action.bundleIdentifier = bundle?.bundleIdentifier
+        if shouldRefreshTitle {
+            action.title = automaticApplicationTitle(for: url)
+        }
+    }
+
+    private func chooseTargetDirectory() {
+        let oldTarget = action.targetPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let shouldRefreshTitle = oldTarget == nil
+            || oldTarget.map { action.title == "打开 \($0.lastPathComponent)" } == true
+        let panel = NSOpenPanel()
+        panel.title = "选择常用目录"
+        panel.prompt = "选择"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        action.targetPath = url.path
+        if shouldRefreshTitle {
+            action.title = "打开 \(url.lastPathComponent)"
+        }
+    }
+
+    private func automaticApplicationTitle(for url: URL) -> String {
+        let bundle = Bundle(url: url)
+        let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+        return action.kind == .terminal ? "在 \(name) 打开" : "使用 \(name) 打开"
+    }
+
+    private func isUnsafePathComponent(_ value: String) -> Bool {
+        value == "."
+            || value == ".."
+            || value.contains("/")
+            || value.contains("\\")
+            || value.contains(":")
+            || value.unicodeScalars.contains("\0")
     }
 }
 

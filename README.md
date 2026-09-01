@@ -18,7 +18,7 @@
 
 仓库中的个人版使用本机 ad-hoc 签名，不需要 Apple ID、开发者证书或 provisioning profile。
 
-1. 运行 `./Scripts/build-local.sh`，或直接使用已经生成的 `dist/RightClickAssistant.app`。
+1. 运行 `./Scripts/build-local.sh`，完成后使用生成的 `dist/RightClickAssistant.app`。
 2. 建议把应用拖入“应用程序”文件夹，然后打开一次。
 3. 在应用中点击“扩展设置… → 打开登录项与扩展设置”，启用“右键助手扩展”。
 4. 如果 Finder 菜单没有立即出现，请重新打开 Finder 窗口。

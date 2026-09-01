@@ -120,9 +120,15 @@ struct ActionConditions: Codable, Equatable, Sendable {
     private func matchesPaths(_ urls: [URL]) -> Bool {
         guard !pathPrefixes.isEmpty else { return true }
         return urls.allSatisfy { url in
-            let path = url.standardizedFileURL.path
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
             return pathPrefixes.contains { rawPrefix in
-                let prefix = URL(fileURLWithPath: rawPrefix, isDirectory: true).standardizedFileURL.path
+                let prefix = URL(fileURLWithPath: rawPrefix, isDirectory: true)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+                    .path
+                if prefix == "/" {
+                    return path.hasPrefix("/")
+                }
                 return path == prefix || path.hasPrefix(prefix + "/")
             }
         }
@@ -256,7 +262,7 @@ struct ActionGroup: Codable, Identifiable, Equatable, Sendable {
 }
 
 struct AssistantConfiguration: Codable, Equatable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version: Int
     var actions: [ConfiguredAction]
@@ -284,7 +290,7 @@ struct AssistantConfiguration: Codable, Equatable, Sendable {
     }
 
     static var defaultValue: AssistantConfiguration {
-        let files = ActionGroup(id: "files", title: "文件", symbolName: "doc.on.doc")
+        let files = ActionGroup(id: "files", title: "文件", symbolName: "folder.fill")
         let open = ActionGroup(id: "open", title: "打开方式", symbolName: "arrow.up.forward.app")
         return AssistantConfiguration(
             actions: [
@@ -355,6 +361,12 @@ struct AssistantConfiguration: Codable, Equatable, Sendable {
         copy.actions = actions.filter { seenActions.insert($0.id).inserted }
         var seenGroups = Set<String>()
         copy.groups = groups.filter { seenGroups.insert($0.id).inserted }
+        if version < 3,
+           let filesGroupIndex = copy.groups.firstIndex(where: {
+               $0.id == "files" && $0.symbolName == "doc.on.doc"
+           }) {
+            copy.groups[filesGroupIndex].symbolName = "folder.fill"
+        }
         let validGroups = Set(copy.groups.map(\.id))
         for index in copy.actions.indices where copy.actions[index].groupID.map({ !validGroups.contains($0) }) == true {
             copy.actions[index].groupID = nil
@@ -364,10 +376,50 @@ struct AssistantConfiguration: Codable, Equatable, Sendable {
     }
 }
 
+enum ConfigurationLoadIssue: Equatable, Sendable {
+    case corruptedData
+    case unsupportedVersion(Int)
+
+    fileprivate var persistedValue: String {
+        switch self {
+        case .corruptedData:
+            return "corruptedData"
+        case let .unsupportedVersion(version):
+            return "unsupportedVersion:\(version)"
+        }
+    }
+}
+
+struct ConfigurationLoadResult: Equatable, Sendable {
+    var configuration: AssistantConfiguration
+    var issue: ConfigurationLoadIssue?
+    var recoveredFromLastKnownGood: Bool
+}
+
+struct ExecutionRequest: Codable, Equatable, Sendable {
+    let id: String
+    let actionID: String
+    let paths: [String]
+    let isContainer: Bool
+    let createdAt: Date
+
+    var urls: [URL] {
+        paths.map { URL(fileURLWithPath: $0).standardizedFileURL }
+    }
+}
+
 enum SharedPreferences {
     static let suiteName = "com.local.RightClickAssistant.shared"
     static let configurationKey = "configurationV2"
     static let cutPathsKey = "cutPathsV2"
+    static let lastKnownGoodConfigurationKey = "configurationV2.lastKnownGood"
+    static let configurationRecoveryDataKey = "configurationV2.recoveryData"
+    static let previousConfigurationRecoveryDataKey = "configurationV2.previousRecoveryData"
+    static let configurationLoadIssueKey = "configurationV2.loadIssue"
+
+    private static let executionRequestKeyPrefix = "executionRequestV1."
+    private static let executionRequestLifetime: TimeInterval = 30
+    private static let maximumExecutionTargets = 4_096
 
     private static let legacyEnabledActionIDsKey = "enabledActionIDs"
     private static let legacyOrderedActionIDsKey = "orderedActionIDs"
@@ -378,60 +430,202 @@ enum SharedPreferences {
     }
 
     static func configuration(defaults: UserDefaults = defaults) -> AssistantConfiguration {
+        loadConfiguration(defaults: defaults).configuration
+    }
+
+    static func loadConfiguration(defaults: UserDefaults = defaults) -> ConfigurationLoadResult {
         defaults.synchronize()
-        if let data = defaults.data(forKey: configurationKey),
-           let decoded = try? JSONDecoder().decode(AssistantConfiguration.self, from: data) {
-            return decoded.normalized()
+        guard let data = defaults.data(forKey: configurationKey) else {
+            if let lastKnownGoodData = defaults.data(forKey: lastKnownGoodConfigurationKey),
+               let lastKnownGood = try? JSONDecoder().decode(
+                   AssistantConfiguration.self,
+                   from: lastKnownGoodData
+               ),
+               lastKnownGood.version <= AssistantConfiguration.currentVersion {
+                let restored = lastKnownGood.normalized()
+                if canPersistRecoveryState, let restoredData = encoded(restored) {
+                    defaults.set(restoredData, forKey: configurationKey)
+                    defaults.removeObject(forKey: configurationLoadIssueKey)
+                    defaults.synchronize()
+                }
+                return ConfigurationLoadResult(
+                    configuration: restored,
+                    issue: nil,
+                    recoveredFromLastKnownGood: true
+                )
+            }
+            let migrated = migrateLegacy(defaults: defaults)
+            rememberLastKnownGood(migrated, defaults: defaults)
+            return ConfigurationLoadResult(
+                configuration: migrated,
+                issue: nil,
+                recoveredFromLastKnownGood: false
+            )
         }
-        return migrateLegacy(defaults: defaults)
+
+        do {
+            if let version = try? JSONDecoder().decode(ConfigurationVersionEnvelope.self, from: data).version,
+               version > AssistantConfiguration.currentVersion {
+                return recover(
+                    from: data,
+                    issue: .unsupportedVersion(version),
+                    defaults: defaults
+                )
+            }
+            let decoded = try JSONDecoder().decode(AssistantConfiguration.self, from: data)
+            let normalized = decoded.normalized()
+            if canPersistRecoveryState,
+               normalized != decoded,
+               let normalizedData = encoded(normalized) {
+                defaults.set(normalizedData, forKey: configurationKey)
+                defaults.synchronize()
+            }
+            rememberLastKnownGood(normalized, defaults: defaults)
+            if canPersistRecoveryState {
+                defaults.removeObject(forKey: configurationLoadIssueKey)
+            }
+            return ConfigurationLoadResult(
+                configuration: normalized,
+                issue: nil,
+                recoveredFromLastKnownGood: false
+            )
+        } catch {
+            return recover(from: data, issue: .corruptedData, defaults: defaults)
+        }
     }
 
     static func encoded(_ configuration: AssistantConfiguration) -> Data? {
         try? JSONEncoder().encode(configuration.normalized())
     }
 
-    static func executionURL(actionID: String, urls: [URL]) -> URL? {
+    @discardableResult
+    static func saveConfiguration(
+        _ configuration: AssistantConfiguration,
+        defaults: UserDefaults = defaults
+    ) -> Bool {
+        guard let data = encoded(configuration) else { return false }
+        defaults.set(data, forKey: configurationKey)
+        defaults.set(data, forKey: lastKnownGoodConfigurationKey)
+        defaults.removeObject(forKey: configurationLoadIssueKey)
+        defaults.synchronize()
+        return true
+    }
+
+    static func executionURL(
+        actionID: String,
+        urls: [URL],
+        isContainer: Bool,
+        defaults: UserDefaults = defaults,
+        createdAt: Date = Date()
+    ) -> URL? {
+        let paths = urls.map { $0.standardizedFileURL.path }
+        guard !actionID.isEmpty,
+              !paths.isEmpty,
+              paths.count <= maximumExecutionTargets,
+              zip(urls, paths).allSatisfy({ url, path in
+                  url.isFileURL && path.hasPrefix("/") && !path.contains("\0")
+              }) else {
+            return nil
+        }
+
+        let requestID = UUID().uuidString
+        let request = ExecutionRequest(
+            id: requestID,
+            actionID: actionID,
+            paths: paths,
+            isContainer: isContainer,
+            createdAt: createdAt
+        )
+        guard let data = try? JSONEncoder().encode(request) else { return nil }
+        purgeExpiredExecutionRequests(defaults: defaults, now: createdAt)
+        defaults.set(data, forKey: executionRequestKeyPrefix + requestID)
+        defaults.synchronize()
+
         var components = URLComponents()
         components.scheme = "rightclickassistant"
         components.host = "execute"
-        components.queryItems = [URLQueryItem(name: "action", value: actionID)]
-            + urls.map { URLQueryItem(name: "target", value: $0.path) }
+        components.queryItems = [URLQueryItem(name: "request", value: requestID)]
         return components.url
     }
 
-    static func executionRequest(from url: URL) -> (actionID: String, urls: [URL])? {
+    static func executionRequest(
+        from url: URL,
+        defaults: UserDefaults = defaults,
+        now: Date = Date()
+    ) -> ExecutionRequest? {
+        defaults.synchronize()
         guard url.scheme == "rightclickassistant", url.host == "execute",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let actionID = components.queryItems?.first(where: { $0.name == "action" })?.value else {
+              let queryItems = components.queryItems,
+              queryItems.count == 1,
+              queryItems[0].name == "request",
+              let requestID = queryItems[0].value,
+              UUID(uuidString: requestID) != nil else {
             return nil
         }
-        let urls = components.queryItems?
-            .filter { $0.name == "target" }
-            .compactMap(\.value)
-            .map { URL(fileURLWithPath: $0) } ?? []
-        return (actionID, urls)
+
+        let key = executionRequestKeyPrefix + requestID
+        guard let data = defaults.data(forKey: key) else { return nil }
+        defaults.removeObject(forKey: key)
+        defaults.synchronize()
+
+        guard let request = try? JSONDecoder().decode(ExecutionRequest.self, from: data),
+              request.id == requestID,
+              !request.actionID.isEmpty,
+              !request.paths.isEmpty,
+              request.paths.count <= maximumExecutionTargets,
+              request.paths.allSatisfy({ $0.hasPrefix("/") && !$0.contains("\0") }),
+              now.timeIntervalSince(request.createdAt) >= -5,
+              now.timeIntervalSince(request.createdAt) <= executionRequestLifetime else {
+            return nil
+        }
+        return request
+    }
+
+    static func discardExecutionRequest(
+        from url: URL,
+        defaults: UserDefaults = defaults
+    ) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let requestID = components.queryItems?.first(where: { $0.name == "request" })?.value,
+              UUID(uuidString: requestID) != nil else { return }
+        defaults.removeObject(forKey: executionRequestKeyPrefix + requestID)
+        defaults.synchronize()
+    }
+
+    private static func purgeExpiredExecutionRequests(defaults: UserDefaults, now: Date) {
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix(executionRequestKeyPrefix) {
+            guard let data = value as? Data,
+                  let request = try? JSONDecoder().decode(ExecutionRequest.self, from: data),
+                  now.timeIntervalSince(request.createdAt) >= -5,
+                  now.timeIntervalSince(request.createdAt) <= executionRequestLifetime else {
+                defaults.removeObject(forKey: key)
+                continue
+            }
+        }
     }
 
     private static func migrateLegacy(defaults: UserDefaults) -> AssistantConfiguration {
         var configuration = AssistantConfiguration.defaultValue
-        guard let legacyOrder = defaults.stringArray(forKey: legacyOrderedActionIDsKey) else {
-            return configuration
-        }
-        let enabled = Set(defaults.stringArray(forKey: legacyEnabledActionIDsKey) ?? [])
         let mapping = [
             "copyPath": "builtin.copyPath",
             "copyName": "builtin.copyName",
             "newTextFile": "template.text",
             "openInTerminal": "terminal.system"
         ]
-        let orderedIDs = legacyOrder.compactMap { mapping[$0] }
-        configuration.actions.sort { lhs, rhs in
-            (orderedIDs.firstIndex(of: lhs.id) ?? Int.max) < (orderedIDs.firstIndex(of: rhs.id) ?? Int.max)
+
+        if let legacyOrder = defaults.stringArray(forKey: legacyOrderedActionIDsKey) {
+            let orderedIDs = legacyOrder.compactMap { mapping[$0] }
+            configuration.actions.sort { lhs, rhs in
+                (orderedIDs.firstIndex(of: lhs.id) ?? Int.max) < (orderedIDs.firstIndex(of: rhs.id) ?? Int.max)
+            }
         }
-        for index in configuration.actions.indices {
-            let legacyID = mapping.first(where: { $0.value == configuration.actions[index].id })?.key
-            if let legacyID {
-                configuration.actions[index].isEnabled = enabled.isEmpty || enabled.contains(legacyID)
+
+        if defaults.object(forKey: legacyEnabledActionIDsKey) != nil {
+            let enabled = Set(defaults.stringArray(forKey: legacyEnabledActionIDsKey) ?? [])
+            for index in configuration.actions.indices {
+                let legacyID = mapping.first(where: { $0.value == configuration.actions[index].id })?.key
+                configuration.actions[index].isEnabled = legacyID.map(enabled.contains) ?? false
             }
         }
 
@@ -453,6 +647,59 @@ enum SharedPreferences {
         }
         return configuration.normalized()
     }
+
+    private static var canPersistRecoveryState: Bool {
+        Bundle.main.bundleIdentifier != "com.local.RightClickAssistant.FinderExtension"
+    }
+
+    private static func rememberLastKnownGood(
+        _ configuration: AssistantConfiguration,
+        defaults: UserDefaults
+    ) {
+        guard canPersistRecoveryState, let data = encoded(configuration) else { return }
+        defaults.set(data, forKey: lastKnownGoodConfigurationKey)
+        defaults.synchronize()
+    }
+
+    private static func recover(
+        from failedData: Data,
+        issue: ConfigurationLoadIssue,
+        defaults: UserDefaults
+    ) -> ConfigurationLoadResult {
+        if canPersistRecoveryState {
+            if let currentRecovery = defaults.data(forKey: configurationRecoveryDataKey),
+               currentRecovery != failedData {
+                defaults.set(currentRecovery, forKey: previousConfigurationRecoveryDataKey)
+            }
+            defaults.set(failedData, forKey: configurationRecoveryDataKey)
+            defaults.set(issue.persistedValue, forKey: configurationLoadIssueKey)
+            defaults.synchronize()
+        }
+
+        if let lastKnownGoodData = defaults.data(forKey: lastKnownGoodConfigurationKey),
+           let lastKnownGood = try? JSONDecoder().decode(AssistantConfiguration.self, from: lastKnownGoodData),
+           lastKnownGood.version <= AssistantConfiguration.currentVersion {
+            return ConfigurationLoadResult(
+                configuration: lastKnownGood.normalized(),
+                issue: issue,
+                recoveredFromLastKnownGood: true
+            )
+        }
+
+        return ConfigurationLoadResult(
+            configuration: AssistantConfiguration(
+                actions: [],
+                groups: [],
+                showsFavoritesAtTopLevel: false
+            ),
+            issue: issue,
+            recoveredFromLastKnownGood: false
+        )
+    }
+}
+
+private struct ConfigurationVersionEnvelope: Decodable {
+    let version: Int
 }
 
 private struct LegacyApplicationAction: Codable {
