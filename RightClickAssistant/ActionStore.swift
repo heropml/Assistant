@@ -172,7 +172,7 @@ final class ActionStore: ObservableObject {
         )
     }
 
-    func handleExecutionURL(_ url: URL) {
+    func handleExecutionURL(_ url: URL, terminateAfterExecution: Bool) {
         let prepared: (action: ConfiguredAction, urls: [URL])
         do {
             prepared = try HostActionExecutor.prepareExecution(from: url, defaults: defaults)
@@ -180,11 +180,12 @@ final class ActionStore: ObservableObject {
             if error != .invalidRequest {
                 Self.showError("无法执行动作", detail: error.localizedDescription)
             }
+            terminateIfNeeded(terminateAfterExecution)
             return
         } catch {
+            terminateIfNeeded(terminateAfterExecution)
             return
         }
-        NSApp.hide(nil)
         if prepared.action.kind == .builtIn,
            prepared.action.builtInOperation == .copyPath
                 || prepared.action.builtInOperation == .copyName {
@@ -196,6 +197,7 @@ final class ActionStore: ObservableObject {
             } catch {
                 Self.showError("动作执行失败", detail: error.localizedDescription)
             }
+            terminateIfNeeded(terminateAfterExecution)
             return
         }
         Task {
@@ -206,7 +208,13 @@ final class ActionStore: ObservableObject {
             } catch {
                 Self.showError("动作执行失败", detail: error.localizedDescription)
             }
+            terminateIfNeeded(terminateAfterExecution)
         }
+    }
+
+    private func terminateIfNeeded(_ shouldTerminate: Bool) {
+        guard shouldTerminate else { return }
+        NSApplication.shared.terminate(nil)
     }
 
     private func update(_ id: String, change: (inout ConfiguredAction) -> Void) {

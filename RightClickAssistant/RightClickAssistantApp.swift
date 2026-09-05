@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 @main
 struct RightClickAssistantApp: App {
+    @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var store = ActionStore()
     @State private var isMenuBarExtraInserted = true
 
@@ -10,7 +12,12 @@ struct RightClickAssistantApp: App {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 820, minHeight: 600)
-                .onOpenURL { store.handleExecutionURL($0) }
+                .onOpenURL {
+                    store.handleExecutionURL(
+                        $0,
+                        terminateAfterExecution: applicationDelegate.beginExecution()
+                    )
+                }
         }
         .defaultSize(width: 920, height: 700)
         .windowResizability(.contentMinSize)
@@ -27,6 +34,47 @@ struct RightClickAssistantApp: App {
                 .labelStyle(.iconOnly)
         }
         .menuBarExtraStyle(.menu)
+    }
+}
+
+@MainActor
+private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var initialLaunchResolved = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool ?? true
+        if isDefaultLaunch {
+            initialLaunchResolved = true
+            presentUserInterface()
+            return
+        }
+
+        // File/URL launches are delivered after didFinishLaunching. Keep the
+        // process UI-less while waiting, but recover normally if macOS started
+        // us for another non-default reason such as state restoration.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, !self.initialLaunchResolved else { return }
+            self.initialLaunchResolved = true
+            self.presentUserInterface()
+        }
+    }
+
+    func beginExecution() -> Bool {
+        guard !initialLaunchResolved else { return false }
+        initialLaunchResolved = true
+        return true
+    }
+
+    private func presentUserInterface() {
+        let application = NSApplication.shared
+        application.setActivationPolicy(.regular)
+        application.windows.first(where: { $0.canBecomeMain })?.makeKeyAndOrderFront(nil)
+        application.activate(ignoringOtherApps: true)
     }
 }
 

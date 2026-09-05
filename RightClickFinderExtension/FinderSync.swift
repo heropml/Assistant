@@ -148,7 +148,7 @@ final class FinderSync: FIFinderSync {
         }
         let openConfiguration = NSWorkspace.OpenConfiguration()
         openConfiguration.activates = false
-        openConfiguration.hides = true
+        openConfiguration.hides = false
         openConfiguration.addsToRecentItems = false
         openConfiguration.allowsRunningApplicationSubstitution = false
 
