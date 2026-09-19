@@ -1,0 +1,30 @@
+name: 缺陷反馈 / Bug report
+description: 报告可复现的问题
+labels: [bug]
+body:
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: macOS 版本、芯片型号及应用版本
+      placeholder: macOS 15 / Apple M 系列 / v1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请描述所选文件类型、菜单位置与具体操作。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: 截图或日志
+      description: 请先移除私人路径、凭据及其他敏感内容。
