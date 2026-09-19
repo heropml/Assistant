@@ -22,6 +22,7 @@ private struct MenuActionContext {
 
 final class FinderSync: FIFinderSync {
     private let controller = FIFinderSyncController.default()
+    private let configurationCache = SharedConfigurationCache()
     private var menuActionContexts: [Int: MenuActionContext] = [:]
     private var nextMenuActionTag = 1
 
@@ -71,8 +72,8 @@ final class FinderSync: FIFinderSync {
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
-    override var toolbarItemName: String { "右键助手" }
-    override var toolbarItemToolTip: String { "常用 Finder 操作" }
+    override var toolbarItemName: String { L10n.tr("右键助手") }
+    override var toolbarItemToolTip: String { L10n.tr("常用 Finder 操作") }
     override var toolbarItemImage: NSImage {
         brandImage(pointSize: 20)
     }
@@ -89,11 +90,13 @@ final class FinderSync: FIFinderSync {
         // action payload in this principal object and send only the integer tag.
         menuActionContexts.removeAll(keepingCapacity: true)
 
+        SharedPreferences.defaults.synchronize()
         let context = targetContext(for: menuKind)
         let urls = context.urls
         let isContainer = context.isContainer
-        let configuration = SharedPreferences.configuration()
-        let applicable = configuration.actions.filter { $0.matches(urls: urls, isContainer: isContainer) }
+        let configuration = configurationCache.configuration()
+        let matchContext = ActionMatchContext(urls: urls, isContainer: isContainer)
+        let applicable = configuration.actions.filter { $0.isEnabled && $0.conditions.matches(context: matchContext) }
         finderLog.info(
             "Building menu kind=\(menuKind.rawValue, privacy: .public) targets=\(urls.count, privacy: .public) applicable=\(applicable.count, privacy: .public)"
         )
@@ -104,7 +107,7 @@ final class FinderSync: FIFinderSync {
             : []
         let favoriteIDs = Set(favorites.map(\.id))
         let remaining = applicable.filter { !favoriteIDs.contains($0.id) }
-        let root = NSMenu(title: "右键助手")
+        let root = NSMenu(title: L10n.tr("右键助手"))
 
         for action in favorites {
             root.addItem(menuItem(for: action, urls: urls, isContainer: isContainer))
@@ -115,7 +118,7 @@ final class FinderSync: FIFinderSync {
         }
 
         if !remaining.isEmpty {
-            let assistantItem = NSMenuItem(title: "右键助手", action: nil, keyEquivalent: "")
+            let assistantItem = NSMenuItem(title: L10n.tr("右键助手"), action: nil, keyEquivalent: "")
             assistantItem.image = brandImage(pointSize: 16)
             let submenu = buildSubmenu(
                 actions: remaining,
@@ -143,7 +146,7 @@ final class FinderSync: FIFinderSync {
             urls: context.urls,
             isContainer: context.isContainer
         ) else {
-            Self.showError("无法执行动作", detail: "右键助手主程序未安装或无法启动。")
+            Self.showError(L10n.tr("无法执行动作"), detail: L10n.tr("右键助手主程序未安装或无法启动。"))
             return
         }
         let openConfiguration = NSWorkspace.OpenConfiguration()
@@ -158,7 +161,7 @@ final class FinderSync: FIFinderSync {
             .deletingLastPathComponent()
         guard applicationURL.pathExtension == "app" else {
             SharedPreferences.discardExecutionRequest(from: url)
-            Self.showError("无法执行动作", detail: "无法定位右键助手主程序。")
+            Self.showError(L10n.tr("无法执行动作"), detail: L10n.tr("无法定位右键助手主程序。"))
             return
         }
 
@@ -169,7 +172,7 @@ final class FinderSync: FIFinderSync {
         ) { application, error in
             guard error == nil, application != nil else {
                 SharedPreferences.discardExecutionRequest(from: url)
-                Self.showError("无法执行动作", detail: "右键助手主程序未安装或无法启动。")
+                Self.showError(L10n.tr("无法执行动作"), detail: L10n.tr("右键助手主程序未安装或无法启动。"))
                 return
             }
         }
@@ -181,7 +184,7 @@ final class FinderSync: FIFinderSync {
         urls: [URL],
         isContainer: Bool
     ) -> NSMenu {
-        let submenu = NSMenu(title: "右键助手")
+        let submenu = NSMenu(title: L10n.tr("右键助手"))
         var hasRenderedSection = false
 
         for group in groups {
@@ -190,11 +193,11 @@ final class FinderSync: FIFinderSync {
             if hasRenderedSection {
                 submenu.addItem(.separator())
             }
-            let groupItem = NSMenuItem(title: group.title, action: nil, keyEquivalent: "")
+            let groupItem = NSMenuItem(title: group.localizedTitle, action: nil, keyEquivalent: "")
             groupItem.image = cyberSymbolImage(
                 named: group.symbolName,
                 fallbackName: "folder.fill",
-                description: group.title
+                description: group.localizedTitle
             )
             groupItem.isEnabled = false
             submenu.addItem(groupItem)
@@ -217,7 +220,7 @@ final class FinderSync: FIFinderSync {
     }
 
     private func menuItem(for action: ConfiguredAction, urls: [URL], isContainer: Bool) -> NSMenuItem {
-        let item = NSMenuItem(title: action.title, action: #selector(performAction(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: action.localizedTitle, action: #selector(performAction(_:)), keyEquivalent: "")
         // Finder owns the menu UI, but actions must be delivered back to this
         // extension instance. Without an explicit target Finder only dismisses
         // the menu and never enters the selector.
@@ -233,7 +236,7 @@ final class FinderSync: FIFinderSync {
     private func menuImage(for action: ConfiguredAction) -> NSImage? {
         let configuredName = action.symbolName.trimmingCharacters(in: .whitespacesAndNewlines)
         if let assetName = bundledDefaultActionImageName(for: action, configuredName: configuredName),
-           let image = bundledActionImage(named: assetName, description: action.title) {
+           let image = bundledActionImage(named: assetName, description: action.localizedTitle) {
             return image
         }
 
@@ -244,7 +247,7 @@ final class FinderSync: FIFinderSync {
             let source = NSWorkspace.shared.icon(forFile: applicationURL.path)
             let image = (source.copy() as? NSImage) ?? source
             image.size = NSSize(width: 16, height: 16)
-            image.accessibilityDescription = action.title
+            image.accessibilityDescription = action.localizedTitle
             return image
         }
 
@@ -252,7 +255,7 @@ final class FinderSync: FIFinderSync {
         return cyberSymbolImage(
             named: symbolName,
             fallbackName: action.kind.symbolName,
-            description: action.title
+            description: action.localizedTitle
         )
     }
 
@@ -315,13 +318,13 @@ final class FinderSync: FIFinderSync {
             ?? NSImage(named: assetName)
             ?? NSImage(
                 systemSymbolName: "cursorarrow.click.2",
-                accessibilityDescription: "右键助手"
+                accessibilityDescription: L10n.tr("右键助手")
             )
             ?? NSImage()
         let image = (source.copy() as? NSImage) ?? source
         image.size = NSSize(width: pointSize, height: pointSize)
         image.isTemplate = true
-        image.accessibilityDescription = "右键助手"
+        image.accessibilityDescription = L10n.tr("右键助手")
         return image
     }
 

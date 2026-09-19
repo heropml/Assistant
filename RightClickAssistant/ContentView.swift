@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @ObservedObject private var language = LanguageStore.shared
     @EnvironmentObject private var store: ActionStore
     @Environment(\.openSettings) private var openSettings
     @State private var editingAction: ConfiguredAction?
@@ -9,6 +10,10 @@ struct ContentView: View {
     @State private var groupPendingDeletion: ActionGroup?
     @State private var isShowingGroupDeleteConfirmation = false
     @State private var searchText = ""
+    @State private var showsExecutionHistory = false
+    @State private var transferError: String?
+    @State private var showsUpdate = false
+    @StateObject private var updater = UpdateManager()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,11 +28,16 @@ struct ContentView: View {
             }
             toolbar
             Divider()
+            if !store.executions.isEmpty {
+                executionStatus
+                Divider()
+            }
             actionList
             Divider()
             footer
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: $showsUpdate) { UpdateView(updater: updater) }
         .sheet(item: $editingAction) { action in
             ActionEditor(action: action, groups: store.groups) { store.upsert($0) }
         }
@@ -41,17 +51,25 @@ struct ContentView: View {
             }
         }
         .confirmationDialog(
-            "删除分组“\(groupPendingDeletion?.title ?? "")”？",
+            L10n.tr("删除分组“%@”？", String(describing: groupPendingDeletion?.localizedTitle ?? "")),
             isPresented: $isShowingGroupDeleteConfirmation
         ) {
-            Button("删除分组", role: .destructive) {
+            Button(L10n.tr("删除分组"), role: .destructive) {
                 guard let group = groupPendingDeletion else { return }
                 store.removeGroup(group)
                 groupPendingDeletion = nil
             }
-            Button("取消", role: .cancel) { groupPendingDeletion = nil }
+            Button(L10n.tr("取消"), role: .cancel) { groupPendingDeletion = nil }
         } message: {
-            Text("分组内的动作会保留，并移到未分组。")
+            Text(L10n.tr("分组内的动作会保留，并移到未分组。"))
+        }
+        .alert(L10n.tr("配置操作失败"), isPresented: Binding(
+            get: { transferError != nil },
+            set: { if !$0 { transferError = nil } }
+        )) {
+            Button(L10n.tr("好"), role: .cancel) { transferError = nil }
+        } message: {
+            Text(transferError ?? "")
         }
     }
 
@@ -63,12 +81,12 @@ struct ContentView: View {
                 .scaledToFit()
                 .frame(width: 64, height: 64)
                 .shadow(color: .indigo.opacity(0.22), radius: 10, y: 5)
-                .accessibilityLabel("右键助手")
+                .accessibilityLabel(L10n.tr("右键助手"))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("右键助手")
+                Text(L10n.tr("右键助手"))
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
-                Text("一套动作栈，按当前文件和目录自动显示")
+                Text(L10n.tr("一套动作栈，按当前文件和目录自动显示"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -76,11 +94,33 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 5) {
-                Label("\(store.enabledCount) 项启用 · \(store.favoriteCount) 项直达", systemImage: "checkmark.circle.fill")
+                Label(L10n.tr("%@ 项启用 · %@ 项直达", String(describing: store.enabledCount), String(describing: store.favoriteCount)), systemImage: "checkmark.circle.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.green)
-                Button("扩展设置…") { openSettings() }
-                    .buttonStyle(.link)
+                HStack(spacing: 12) {
+                    Menu {
+                        Picker(L10n.tr("语言"), selection: $language.selection) {
+                            ForEach(AppLanguage.allCases) { choice in
+                                Text(choice.nativeName).tag(choice)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "globe")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(L10n.tr("界面语言"))
+                    Button(L10n.tr("扩展设置…")) { openSettings() }
+                        .buttonStyle(.link)
+                    Menu {
+                        Button(L10n.tr("导出配置…"), systemImage: "square.and.arrow.up") { exportConfiguration() }
+                        Button(L10n.tr("导入配置…"), systemImage: "square.and.arrow.down") { importConfiguration() }
+                    } label: {
+                        Label(L10n.tr("配置备份"), systemImage: "externaldrive")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
             }
         }
         .padding(.horizontal, 28)
@@ -92,14 +132,14 @@ struct ContentView: View {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索动作、类型或分组", text: $searchText)
+                TextField(L10n.tr("搜索动作、类型或分组"), text: $searchText)
                     .textFieldStyle(.plain)
             }
             .padding(.horizontal, 11)
             .frame(width: 260, height: 30)
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
-            Toggle("收藏显示在一级菜单", isOn: Binding(
+            Toggle(L10n.tr("收藏显示在一级菜单"), isOn: Binding(
                 get: { store.configuration.showsFavoritesAtTopLevel },
                 set: { store.setShowsFavoritesAtTopLevel($0) }
             ))
@@ -108,9 +148,9 @@ struct ContentView: View {
             Spacer()
 
             Button {
-                groupEditor = GroupEditorContext(group: ActionGroup(title: "新分组"), isNew: true)
+                groupEditor = GroupEditorContext(group: ActionGroup(title: L10n.tr("新分组")), isNew: true)
             } label: {
-                Label("新建分组", systemImage: "folder.badge.plus")
+                Label(L10n.tr("新建分组"), systemImage: "folder.badge.plus")
             }
 
             addActionMenu
@@ -120,6 +160,80 @@ struct ContentView: View {
         .background(.bar)
     }
 
+    private var executionStatus: some View {
+        DisclosureGroup(isExpanded: $showsExecutionHistory) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(store.executions) { execution in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(execution.summary)
+                                Spacer()
+                                Text(execution.startedAt, style: .time)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if case .failed(let message) = execution.outcome {
+                                Text(message)
+                                    .foregroundStyle(.red)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                .font(.callout)
+                .padding(.top, 8)
+            }
+            .frame(maxHeight: 180)
+        } label: {
+            HStack(spacing: 8) {
+                if store.runningExecutionCount > 0 {
+                    ProgressView().controlSize(.small)
+                    Text(L10n.tr("正在执行 %@ 个动作", String(describing: store.runningExecutionCount)))
+                } else {
+                    Text(store.executions.first?.summary ?? L10n.tr("执行记录"))
+                }
+                Spacer()
+                Text(L10n.tr("本次运行记录")).foregroundStyle(.secondary)
+            }
+            .font(.callout)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 10)
+    }
+
+    private func exportConfiguration() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = L10n.tr("右键助手配置.json")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try ConfigurationTransfer.encode(store.configuration).write(to: url, options: .atomic)
+        } catch {
+            transferError = error.localizedDescription
+        }
+    }
+
+    private func importConfiguration() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let configuration = try ConfigurationTransfer.decode(Data(contentsOf: url))
+            let scripts = configuration.actions.filter { $0.kind == .shell || $0.kind == .appleScript }.count
+            let alert = NSAlert()
+            alert.messageText = L10n.tr("导入并替换当前配置？")
+            alert.informativeText = L10n.tr("文件：%@\n包含 %@ 个动作、%@ 个分组，其中 %@ 个脚本动作。\n\n将替换当前的 %@ 个动作和 %@ 个分组。需要保留当前配置时，请先取消并导出。导入本身不会执行任何动作。", String(describing: url.lastPathComponent), String(describing: configuration.actions.count), String(describing: configuration.groups.count), String(describing: scripts), String(describing: store.actions.count), String(describing: store.groups.count))
+            alert.addButton(withTitle: L10n.tr("导入并替换"))
+            alert.addButton(withTitle: L10n.tr("取消"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            store.importConfiguration(configuration)
+        } catch {
+            transferError = error.localizedDescription
+        }
+    }
+
     private func configurationWarning(
         _ issue: ConfigurationLoadIssue,
         recoveredFromBackup: Bool
@@ -127,12 +241,12 @@ struct ContentView: View {
         let message: String = switch issue {
         case .corruptedData:
             recoveredFromBackup
-                ? "配置数据损坏，已使用最近一次有效配置；原始数据已保留用于恢复。"
-                : "配置数据损坏且没有有效备份，已暂停全部动作；原始数据已保留用于恢复。"
+                ? L10n.tr("配置数据损坏，已使用最近一次有效配置；原始数据已保留用于恢复。")
+                : L10n.tr("配置数据损坏且没有有效备份，已暂停全部动作；原始数据已保留用于恢复。")
         case let .unsupportedVersion(version):
             recoveredFromBackup
-                ? "配置来自较新的版本（v\(version)），当前版本未覆盖它；已使用最近一次有效配置。"
-                : "配置来自较新的版本（v\(version)）且没有兼容备份，已暂停全部动作以避免覆盖。"
+                ? L10n.tr("配置来自较新的版本（v%@），当前版本未覆盖它；已使用最近一次有效配置。", String(describing: version))
+                : L10n.tr("配置来自较新的版本（v%@）且没有兼容备份，已暂停全部动作以避免覆盖。", String(describing: version))
         }
         return Label(message, systemImage: "exclamationmark.triangle.fill")
             .font(.callout)
@@ -145,22 +259,22 @@ struct ContentView: View {
 
     private var addActionMenu: some View {
         Menu {
-            Menu("基础动作") {
-                Button("复制路径") { editBuiltIn(.copyPath) }
-                Button("复制文件名") { editBuiltIn(.copyName) }
-                Button("剪切") { editBuiltIn(.cut) }
-                Button("粘贴已剪切项目") { editBuiltIn(.paste) }
+            Menu(L10n.tr("基础动作")) {
+                Button(L10n.tr("复制路径")) { editBuiltIn(.copyPath) }
+                Button(L10n.tr("复制文件名")) { editBuiltIn(.copyName) }
+                Button(L10n.tr("剪切")) { editBuiltIn(.cut) }
+                Button(L10n.tr("粘贴已剪切项目")) { editBuiltIn(.paste) }
             }
             Divider()
-            Button("应用…", systemImage: "app") { chooseApplication(kind: .application) }
-            Button("终端…", systemImage: "apple.terminal") { chooseApplication(kind: .terminal) }
-            Button("常用目录…", systemImage: "folder") { chooseDirectory() }
+            Button(L10n.tr("应用…"), systemImage: "app") { chooseApplication(kind: .application) }
+            Button(L10n.tr("终端…"), systemImage: "apple.terminal") { chooseApplication(kind: .terminal) }
+            Button(L10n.tr("常用目录…"), systemImage: "folder") { chooseDirectory() }
             Divider()
-            Button("文件模板", systemImage: "doc.badge.plus") { editingAction = store.draft(for: .template) }
-            Button("Shell 脚本", systemImage: "chevron.left.forwardslash.chevron.right") { editingAction = store.draft(for: .shell) }
+            Button(L10n.tr("文件模板"), systemImage: "doc.badge.plus") { editingAction = store.draft(for: .template) }
+            Button(L10n.tr("Shell 脚本"), systemImage: "chevron.left.forwardslash.chevron.right") { editingAction = store.draft(for: .shell) }
             Button("AppleScript", systemImage: "applescript") { editingAction = store.draft(for: .appleScript) }
         } label: {
-            Label("添加动作", systemImage: "plus")
+            Label(L10n.tr("添加动作"), systemImage: "plus")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -172,22 +286,22 @@ struct ContentView: View {
                 groupStrip
                 VStack(spacing: 9) {
                     HStack {
-                        Text("动作栈")
+                        Text(L10n.tr("动作栈"))
                             .font(.headline)
-                        Text(isSearching ? "清空搜索后可调整顺序" : "拖动任意动作可跨类型排序")
+                        Text(isSearching ? L10n.tr("清空搜索后可调整顺序") : L10n.tr("拖动任意动作可跨类型排序"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(filteredActions.count) 项")
+                        Text(L10n.tr("%@ 项", String(describing: filteredActions.count)))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
 
                     if filteredActions.isEmpty {
                         ContentUnavailableView(
-                            "没有匹配的动作",
+                            L10n.tr("没有匹配的动作"),
                             systemImage: "line.3.horizontal.decrease.circle",
-                            description: Text("更换搜索词，或从右上角添加新动作。")
+                            description: Text(L10n.tr("更换搜索词，或从右上角添加新动作。"))
                         )
                         .frame(minHeight: 220)
                     } else {
@@ -210,10 +324,10 @@ struct ContentView: View {
     private var groupStrip: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("菜单分组")
+                Text(L10n.tr("菜单分组"))
                     .font(.headline)
                 Spacer()
-                Text("拖动分组排序；未分组动作固定显示在最后")
+                Text(L10n.tr("拖动分组排序；未分组动作固定显示在最后"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -221,20 +335,20 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     ForEach(store.groups) { group in
                         Menu {
-                            Button("向前移动", systemImage: "arrow.left") {
+                            Button(L10n.tr("向前移动"), systemImage: "arrow.left") {
                                 store.moveGroup(group, by: -1)
                             }
                             .disabled(!store.canMoveGroup(group, by: -1))
-                            Button("向后移动", systemImage: "arrow.right") {
+                            Button(L10n.tr("向后移动"), systemImage: "arrow.right") {
                                 store.moveGroup(group, by: 1)
                             }
                             .disabled(!store.canMoveGroup(group, by: 1))
                             Divider()
-                            Button("编辑") {
+                            Button(L10n.tr("编辑")) {
                                 groupEditor = GroupEditorContext(group: group, isNew: false)
                             }
                             Divider()
-                            Button("删除分组", role: .destructive) {
+                            Button(L10n.tr("删除分组"), role: .destructive) {
                                 groupPendingDeletion = group
                                 isShowingGroupDeleteConfirmation = true
                             }
@@ -242,7 +356,7 @@ struct ContentView: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "line.3.horizontal")
                                     .foregroundStyle(.tertiary)
-                                Label(group.title, systemImage: group.symbolName)
+                                Label(group.localizedTitle, systemImage: group.symbolName)
                             }
                                 .padding(.horizontal, 11)
                                 .padding(.vertical, 7)
@@ -256,7 +370,7 @@ struct ContentView: View {
                             store.moveGroup(groupID: identifier, before: group.id)
                             return true
                         }
-                        .help("拖动调整分组顺序，或点击选择前后移动")
+                        .help(L10n.tr("拖动调整分组顺序，或点击选择前后移动"))
                     }
                 }
             }
@@ -267,8 +381,15 @@ struct ContentView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Image(systemName: "info.circle")
-            Text("修改会即时写入 Finder 配置；脚本、模板与文件移动由右键助手主程序执行。")
+            Text(L10n.tr("修改会即时写入 Finder 配置；脚本、模板与文件移动由右键助手主程序执行。"))
             Spacer()
+            Text("v\(AppVersion.current)").monospacedDigit().fixedSize()
+            Button(L10n.tr("检查更新")) {
+                store.keepRunning()
+                showsUpdate = true
+            }
+            .buttonStyle(.link)
+            .fixedSize()
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -281,7 +402,7 @@ struct ContentView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return store.actions }
         return store.actions.filter { action in
-            action.title.lowercased().contains(query)
+            action.localizedTitle.lowercased().contains(query)
                 || action.kind.title.lowercased().contains(query)
                 || groupTitle(for: action).lowercased().contains(query)
         }
@@ -292,22 +413,22 @@ struct ContentView: View {
     }
 
     private func groupTitle(for action: ConfiguredAction) -> String {
-        guard let groupID = action.groupID else { return "未分组" }
-        return store.groups.first(where: { $0.id == groupID })?.title ?? "未分组"
+        guard let groupID = action.groupID else { return L10n.tr("未分组") }
+        return store.groups.first(where: { $0.id == groupID })?.localizedTitle ?? L10n.tr("未分组")
     }
 
     private func editBuiltIn(_ operation: BuiltInOperation) {
         let values: (String, String, ActionConditions)
         switch operation {
         case .copyPath:
-            values = ("复制路径", "point.topleft.down.to.point.bottomright.curvepath", ActionConditions())
+            values = (L10n.tr("复制路径"), "point.topleft.down.to.point.bottomright.curvepath", ActionConditions())
         case .copyName:
-            values = ("复制文件名", "doc.on.doc", ActionConditions())
+            values = (L10n.tr("复制文件名"), "doc.on.doc", ActionConditions())
         case .cut:
-            values = ("剪切", "scissors", ActionConditions(allowsContainer: false))
+            values = (L10n.tr("剪切"), "scissors", ActionConditions(allowsContainer: false))
         case .paste:
             values = (
-                "粘贴已剪切项目",
+                L10n.tr("粘贴已剪切项目"),
                 "doc.on.clipboard",
                 ActionConditions(allowsFiles: false, allowsFolders: true, allowsContainer: true)
             )
@@ -323,8 +444,8 @@ struct ContentView: View {
 
     private func chooseApplication(kind: ActionKind) {
         let panel = NSOpenPanel()
-        panel.title = kind == .terminal ? "选择终端应用" : "选择打开文件的应用"
-        panel.prompt = "选择"
+        panel.title = kind == .terminal ? L10n.tr("选择终端应用") : L10n.tr("选择打开文件的应用")
+        panel.prompt = L10n.tr("选择")
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
         panel.allowedContentTypes = [.applicationBundle]
         panel.allowsMultipleSelection = false
@@ -336,8 +457,8 @@ struct ContentView: View {
 
     private func chooseDirectory() {
         let panel = NSOpenPanel()
-        panel.title = "选择常用目录"
-        panel.prompt = "选择"
+        panel.title = L10n.tr("选择常用目录")
+        panel.prompt = L10n.tr("选择")
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -347,6 +468,7 @@ struct ContentView: View {
 }
 
 private struct ActionRow: View {
+    @ObservedObject private var language = LanguageStore.shared
     @EnvironmentObject private var store: ActionStore
     let action: ConfiguredAction
     let groupTitle: String
@@ -360,7 +482,7 @@ private struct ActionRow: View {
             Image(systemName: "line.3.horizontal")
                 .foregroundStyle(.tertiary)
                 .frame(width: 16)
-                .help("拖动排序")
+                .help(L10n.tr("拖动排序"))
 
             actionIcon
                 .frame(width: 38, height: 38)
@@ -368,7 +490,7 @@ private struct ActionRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
-                    Text(action.title)
+                    Text(action.localizedTitle)
                         .font(.body.weight(.medium))
                     Text(action.kind.title)
                         .font(.caption2.weight(.semibold))
@@ -380,7 +502,7 @@ private struct ActionRow: View {
                         Image(systemName: "star.fill")
                             .font(.caption)
                             .foregroundStyle(.yellow)
-                            .help("一级菜单直达")
+                            .help(L10n.tr("一级菜单直达"))
                     }
                 }
                 Text("\(groupTitle) · \(action.detail) · \(contextSummary)")
@@ -399,8 +521,8 @@ private struct ActionRow: View {
                     .foregroundStyle(action.isFavorite ? .yellow : .secondary)
             }
             .buttonStyle(.borderless)
-            .help(action.isFavorite ? "取消一级菜单直达" : "添加到一级菜单")
-            .accessibilityLabel(action.isFavorite ? "取消“\(action.title)”一级菜单直达" : "将“\(action.title)”添加到一级菜单")
+            .help(action.isFavorite ? L10n.tr("取消一级菜单直达") : L10n.tr("添加到一级菜单"))
+            .accessibilityLabel(action.isFavorite ? L10n.tr("取消“%@”一级菜单直达", String(describing: action.localizedTitle)) : L10n.tr("将“%@”添加到一级菜单", String(describing: action.localizedTitle)))
 
             HStack(spacing: 2) {
                 moveButton("chevron.up", offset: -1)
@@ -409,9 +531,9 @@ private struct ActionRow: View {
             .buttonStyle(.borderless)
 
             Menu {
-                Button("编辑", systemImage: "slider.horizontal.3", action: onEdit)
+                Button(L10n.tr("编辑"), systemImage: "slider.horizontal.3", action: onEdit)
                 Divider()
-                Button("删除", systemImage: "trash", role: .destructive) {
+                Button(L10n.tr("删除"), systemImage: "trash", role: .destructive) {
                     isShowingDeleteConfirmation = true
                 }
             } label: {
@@ -420,7 +542,7 @@ private struct ActionRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .accessibilityLabel("“\(action.title)”更多操作")
+            .accessibilityLabel(L10n.tr("“%@”更多操作", String(describing: action.localizedTitle)))
 
             Toggle("", isOn: Binding(
                 get: { action.isEnabled },
@@ -428,7 +550,7 @@ private struct ActionRow: View {
             ))
             .labelsHidden()
             .toggleStyle(.switch)
-            .accessibilityLabel("启用“\(action.title)”")
+            .accessibilityLabel(L10n.tr("启用“%@”", String(describing: action.localizedTitle)))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -443,11 +565,11 @@ private struct ActionRow: View {
             onDropAction(identifier)
             return true
         }
-        .confirmationDialog("删除动作“\(action.title)”？", isPresented: $isShowingDeleteConfirmation) {
-            Button("删除", role: .destructive) { store.remove(action) }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(L10n.tr("删除动作“%@”？", String(describing: action.localizedTitle)), isPresented: $isShowingDeleteConfirmation) {
+            Button(L10n.tr("删除"), role: .destructive) { store.remove(action) }
+            Button(L10n.tr("取消"), role: .cancel) {}
         } message: {
-            Text("此操作会立即写入 Finder 配置。")
+            Text(L10n.tr("此操作会立即写入 Finder 配置。"))
         }
     }
 
@@ -480,13 +602,13 @@ private struct ActionRow: View {
 
     private var contextSummary: String {
         var parts: [String] = []
-        if action.conditions.allowsFiles { parts.append("文件") }
-        if action.conditions.allowsFolders { parts.append("文件夹") }
-        if action.conditions.allowsContainer { parts.append("空白处") }
+        if action.conditions.allowsFiles { parts.append(L10n.tr("文件")) }
+        if action.conditions.allowsFolders { parts.append(L10n.tr("文件夹")) }
+        if action.conditions.allowsContainer { parts.append(L10n.tr("空白处")) }
         if !action.conditions.fileExtensions.isEmpty {
             parts.append(action.conditions.fileExtensions.map { ".\($0)" }.joined(separator: "/"))
         }
-        if !action.conditions.pathPrefixes.isEmpty { parts.append("限定目录") }
+        if !action.conditions.pathPrefixes.isEmpty { parts.append(L10n.tr("限定目录")) }
         return parts.joined(separator: "、")
     }
 
@@ -499,12 +621,13 @@ private struct ActionRow: View {
                 .contentShape(Rectangle())
         }
         .disabled(!allowsReordering || !store.canMove(action, by: offset))
-        .help(offset < 0 ? "上移" : "下移")
-        .accessibilityLabel(offset < 0 ? "上移“\(action.title)”" : "下移“\(action.title)”")
+        .help(offset < 0 ? L10n.tr("上移") : L10n.tr("下移"))
+        .accessibilityLabel(offset < 0 ? L10n.tr("上移“%@”", String(describing: action.localizedTitle)) : L10n.tr("下移“%@”", String(describing: action.localizedTitle)))
     }
 }
 
 private struct ActionEditor: View {
+    @ObservedObject private var language = LanguageStore.shared
     @Environment(\.dismiss) private var dismiss
     let groups: [ActionGroup]
     let onSave: (ConfiguredAction) -> Void
@@ -521,31 +644,31 @@ private struct ActionEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("菜单") {
-                    TextField("菜单名称", text: $action.title)
-                    TextField("SF Symbol 图标", text: $action.symbolName)
-                    Picker("分组", selection: $action.groupID) {
-                        Text("不分组").tag(String?.none)
+                Section(L10n.tr("菜单")) {
+                    TextField(L10n.tr("菜单名称"), text: Binding(get: { action.localizedTitle }, set: { action.title = $0 }))
+                    TextField(L10n.tr("SF Symbol 图标"), text: $action.symbolName)
+                    Picker(L10n.tr("分组"), selection: $action.groupID) {
+                        Text(L10n.tr("不分组")).tag(String?.none)
                         ForEach(groups) { group in
-                            Text(group.title).tag(Optional(group.id))
+                            Text(group.localizedTitle).tag(Optional(group.id))
                         }
                     }
-                    Toggle("启用动作", isOn: $action.isEnabled)
-                    Toggle("收藏到一级右键菜单", isOn: $action.isFavorite)
+                    Toggle(L10n.tr("启用动作"), isOn: $action.isEnabled)
+                    Toggle(L10n.tr("收藏到一级右键菜单"), isOn: $action.isFavorite)
                 }
 
                 typeSpecificSection
 
-                Section("显示条件") {
+                Section(L10n.tr("显示条件")) {
                     HStack {
-                        Toggle("文件", isOn: $action.conditions.allowsFiles)
-                        Toggle("文件夹", isOn: $action.conditions.allowsFolders)
-                        Toggle("Finder 空白处", isOn: $action.conditions.allowsContainer)
+                        Toggle(L10n.tr("文件"), isOn: $action.conditions.allowsFiles)
+                        Toggle(L10n.tr("文件夹"), isOn: $action.conditions.allowsFolders)
+                        Toggle(L10n.tr("Finder 空白处"), isOn: $action.conditions.allowsContainer)
                     }
-                    TextField("文件扩展名，例如 md, swift, json；留空表示不限", text: $extensionText)
+                    TextField(L10n.tr("文件扩展名，例如 md, swift, json；留空表示不限"), text: $extensionText)
                         .disabled(!action.conditions.allowsFiles)
                     Stepper(
-                        "最少选择 \(action.conditions.minimumSelectionCount) 项",
+                        L10n.tr("最少选择 %@ 项", String(describing: action.conditions.minimumSelectionCount)),
                         value: $action.conditions.minimumSelectionCount,
                         in: 1...99
                     )
@@ -560,15 +683,15 @@ private struct ActionEditor: View {
                     )
                     .disabled(!hasItemContext)
                     Text(hasItemContext
-                         ? "选择数量和扩展名只用于文件或文件夹；Finder 空白处和工具栏未选择项目时不受这些条件限制。"
-                         : "当前动作只显示在 Finder 空白处和工具栏未选择项目时；选择数量与扩展名不适用。")
+                         ? L10n.tr("选择数量和扩展名只用于文件或文件夹；Finder 空白处和工具栏未选择项目时不受这些条件限制。")
+                         : L10n.tr("当前动作只显示在 Finder 空白处和工具栏未选择项目时；选择数量与扩展名不适用。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("作用目录") {
+                Section(L10n.tr("作用目录")) {
                     if action.conditions.pathPrefixes.isEmpty {
-                        Text("所有目录")
+                        Text(L10n.tr("所有目录"))
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(action.conditions.pathPrefixes, id: \.self) { path in
@@ -577,27 +700,27 @@ private struct ActionEditor: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Spacer()
-                                Button("移除") {
+                                Button(L10n.tr("移除")) {
                                     action.conditions.pathPrefixes.removeAll { $0 == path }
                                 }
                                 .buttonStyle(.link)
                             }
                         }
                     }
-                    Button("添加作用目录…", systemImage: "folder.badge.plus", action: chooseScopeDirectory)
+                    Button(L10n.tr("添加作用目录…"), systemImage: "folder.badge.plus", action: chooseScopeDirectory)
                 }
             }
             .formStyle(.grouped)
 
             Divider()
             HStack {
-                Text(validationMessage ?? "所选路径在执行时会再次检查。")
+                Text(validationMessage ?? L10n.tr("所选路径在执行时会再次检查。"))
                     .font(.caption)
                     .foregroundStyle(validationMessage == nil ? Color.secondary : Color.red)
                 Spacer()
-                Button("取消") { dismiss() }
+                Button(L10n.tr("取消")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("保存") { save() }
+                Button(L10n.tr("保存")) { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(validationMessage != nil)
             }
@@ -610,30 +733,30 @@ private struct ActionEditor: View {
     private var typeSpecificSection: some View {
         switch action.kind {
         case .builtIn:
-            Section("基础动作") {
-                LabeledContent("操作", value: builtInTitle)
+            Section(L10n.tr("基础动作")) {
+                LabeledContent(L10n.tr("操作"), value: builtInTitle)
             }
         case .application, .terminal:
             Section(action.kind.title) {
-                LabeledContent("位置", value: action.targetPath ?? "未选择")
-                Button(action.installedApplicationURL() == nil ? "重新选择应用…" : "更换应用…") {
+                LabeledContent(L10n.tr("位置"), value: action.targetPath ?? L10n.tr("未选择"))
+                Button(action.installedApplicationURL() == nil ? L10n.tr("重新选择应用…") : L10n.tr("更换应用…")) {
                     chooseTargetApplication()
                 }
             }
         case .directory:
-            Section("常用目录") {
-                LabeledContent("位置", value: action.targetPath ?? "未选择")
-                Button(targetDirectoryExists ? "更换目录…" : "重新选择目录…") {
+            Section(L10n.tr("常用目录")) {
+                LabeledContent(L10n.tr("位置"), value: action.targetPath ?? L10n.tr("未选择"))
+                Button(targetDirectoryExists ? L10n.tr("更换目录…") : L10n.tr("重新选择目录…")) {
                     chooseTargetDirectory()
                 }
             }
         case .template:
-            Section("文件模板") {
-                TextField("扩展名", text: Binding(
+            Section(L10n.tr("文件模板")) {
+                TextField(L10n.tr("扩展名"), text: Binding(
                     get: { action.templateExtension ?? "" },
                     set: { action.templateExtension = $0 }
                 ))
-                Text("模板内容")
+                Text(L10n.tr("模板内容"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: Binding(
@@ -646,8 +769,8 @@ private struct ActionEditor: View {
         case .shell, .appleScript:
             Section(action.kind.title) {
                 Text(action.kind == .shell
-                     ? "所选路径会作为 $1、$2… 传入；$RCA_DIRECTORY 是当前目录。"
-                     : "所选路径会传给 on run argv。")
+                     ? L10n.tr("所选路径会作为 $1、$2… 传入；$RCA_DIRECTORY 是当前目录。")
+                     : L10n.tr("所选路径会传给 on run argv。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: Binding(
@@ -662,16 +785,16 @@ private struct ActionEditor: View {
 
     private var builtInTitle: String {
         switch action.builtInOperation {
-        case .copyPath: "复制路径"
-        case .copyName: "复制文件名"
-        case .cut: "剪切"
-        case .paste: "粘贴"
-        case nil: "未知"
+        case .copyPath: L10n.tr("复制路径")
+        case .copyName: L10n.tr("复制文件名")
+        case .cut: L10n.tr("剪切")
+        case .paste: L10n.tr("粘贴")
+        case nil: L10n.tr("未知")
         }
     }
 
     private var maximumSelectionLabel: String {
-        action.conditions.maximumSelectionCount.map { "最多选择 \($0) 项" } ?? "选择数量不设上限"
+        action.conditions.maximumSelectionCount.map { L10n.tr("最多选择 %@ 项", String(describing: $0)) } ?? L10n.tr("选择数量不设上限")
     }
 
     private var hasItemContext: Bool {
@@ -686,20 +809,20 @@ private struct ActionEditor: View {
     }
 
     private var validationMessage: String? {
-        if action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "菜单名称不能为空。" }
+        if action.localizedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return L10n.tr("菜单名称不能为空。") }
         if !action.conditions.allowsFiles && !action.conditions.allowsFolders && !action.conditions.allowsContainer {
-            return "至少选择一种显示位置。"
+            return L10n.tr("至少选择一种显示位置。")
         }
         if action.kind == .template {
             let title = action.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if isUnsafePathComponent(title) { return "模板名称不能是 . 或 ..，也不能包含路径分隔符。" }
+            if isUnsafePathComponent(title) { return L10n.tr("模板名称不能是 . 或 ..，也不能包含路径分隔符。") }
             let fileExtension = action.normalizedTemplateExtension
-            if fileExtension.isEmpty { return "模板扩展名不能为空。" }
-            if isUnsafePathComponent(fileExtension) { return "模板扩展名不能是 . 或 ..，也不能包含路径分隔符。" }
+            if fileExtension.isEmpty { return L10n.tr("模板扩展名不能为空。") }
+            if isUnsafePathComponent(fileExtension) { return L10n.tr("模板扩展名不能是 . 或 ..，也不能包含路径分隔符。") }
         }
         if (action.kind == .shell || action.kind == .appleScript)
             && (action.script ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "脚本内容不能为空。"
+            return L10n.tr("脚本内容不能为空。")
         }
         return nil
     }
@@ -725,8 +848,8 @@ private struct ActionEditor: View {
 
     private func chooseScopeDirectory() {
         let panel = NSOpenPanel()
-        panel.title = "选择动作生效的目录"
-        panel.prompt = "添加"
+        panel.title = L10n.tr("选择动作生效的目录")
+        panel.prompt = L10n.tr("添加")
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -740,8 +863,8 @@ private struct ActionEditor: View {
         let shouldRefreshTitle = oldTarget == nil
             || oldTarget.map { action.title == automaticApplicationTitle(for: $0) } == true
         let panel = NSOpenPanel()
-        panel.title = action.kind == .terminal ? "选择终端应用" : "选择打开文件的应用"
-        panel.prompt = "选择"
+        panel.title = action.kind == .terminal ? L10n.tr("选择终端应用") : L10n.tr("选择打开文件的应用")
+        panel.prompt = L10n.tr("选择")
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
         panel.allowedContentTypes = [.applicationBundle]
         panel.allowsMultipleSelection = false
@@ -761,8 +884,8 @@ private struct ActionEditor: View {
         let shouldRefreshTitle = oldTarget == nil
             || oldTarget.map { action.title == "打开 \($0.lastPathComponent)" } == true
         let panel = NSOpenPanel()
-        panel.title = "选择常用目录"
-        panel.prompt = "选择"
+        panel.title = L10n.tr("选择常用目录")
+        panel.prompt = L10n.tr("选择")
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -798,6 +921,7 @@ private struct GroupEditorContext: Identifiable {
 }
 
 private struct GroupEditor: View {
+    @ObservedObject private var language = LanguageStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var group: ActionGroup
     let isNew: Bool
@@ -812,16 +936,16 @@ private struct GroupEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                TextField("分组名称", text: $group.title)
-                TextField("SF Symbol 图标", text: $group.symbolName)
+                TextField(L10n.tr("分组名称"), text: Binding(get: { group.localizedTitle }, set: { group.title = $0 }))
+                TextField(L10n.tr("SF Symbol 图标"), text: $group.symbolName)
             }
             .formStyle(.grouped)
             Divider()
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
+                Button(L10n.tr("取消")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(isNew ? "创建" : "保存") {
+                Button(isNew ? L10n.tr("创建") : L10n.tr("保存")) {
                     group.title = group.title.trimmingCharacters(in: .whitespacesAndNewlines)
                     group.symbolName = group.symbolName.trimmingCharacters(in: .whitespacesAndNewlines)
                     if group.symbolName.isEmpty { group.symbolName = "folder" }

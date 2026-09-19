@@ -14,11 +14,11 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .builtIn: "基础动作"
-        case .application: "应用"
-        case .terminal: "终端"
-        case .directory: "常用目录"
-        case .template: "文件模板"
+        case .builtIn: L10n.tr("基础动作")
+        case .application: L10n.tr("应用")
+        case .terminal: L10n.tr("终端")
+        case .directory: L10n.tr("常用目录")
+        case .template: L10n.tr("文件模板")
         case .shell: "Shell"
         case .appleScript: "AppleScript"
         }
@@ -42,6 +42,44 @@ enum BuiltInOperation: String, Codable, Sendable {
     case copyName
     case cut
     case paste
+}
+
+// A menu evaluation shares metadata across every action. Path resolution is lazy
+// because most actions have no path restrictions.
+final class ActionMatchContext {
+    struct Item {
+        let isDirectory: Bool
+        let fileExtension: String
+    }
+
+    let urls: [URL]
+    let isContainer: Bool
+    private let fileManager: FileManager
+    private var resolvedPrefixes: [String: String] = [:]
+
+    init(urls: [URL], isContainer: Bool, fileManager: FileManager = .default) {
+        self.urls = urls
+        self.isContainer = isContainer
+        self.fileManager = fileManager
+    }
+
+    lazy var items: [Item] = urls.map { url in
+        var directory: ObjCBool = false
+        let exists = fileManager.fileExists(atPath: url.path, isDirectory: &directory)
+        return Item(isDirectory: exists && directory.boolValue, fileExtension: url.pathExtension.lowercased())
+    }
+
+    lazy var resolvedPaths: [String] = urls.map {
+        $0.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    func resolvedPrefix(_ rawPrefix: String) -> String {
+        if let cached = resolvedPrefixes[rawPrefix] { return cached }
+        let path = URL(fileURLWithPath: rawPrefix, isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        resolvedPrefixes[rawPrefix] = path
+        return path
+    }
 }
 
 struct ActionConditions: Codable, Equatable, Sendable {
@@ -85,28 +123,29 @@ struct ActionConditions: Codable, Equatable, Sendable {
     }
 
     func matches(urls: [URL], isContainer: Bool, fileManager: FileManager = .default) -> Bool {
-        guard !urls.isEmpty else { return false }
-        if isContainer {
-            return allowsContainer && matchesPaths(urls)
+        matches(context: ActionMatchContext(urls: urls, isContainer: isContainer, fileManager: fileManager))
+    }
+
+    func matches(context: ActionMatchContext) -> Bool {
+        guard !context.urls.isEmpty else { return false }
+        if context.isContainer {
+            return allowsContainer && matchesPaths(context)
         }
 
-        guard urls.count >= minimumSelectionCount else { return false }
-        if let maximumSelectionCount, urls.count > maximumSelectionCount { return false }
+        guard context.urls.count >= minimumSelectionCount else { return false }
+        if let maximumSelectionCount, context.urls.count > maximumSelectionCount { return false }
 
-        for url in urls {
-            var isDirectory: ObjCBool = false
-            let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            if exists && isDirectory.boolValue {
+        for item in context.items {
+            if item.isDirectory {
                 guard allowsFolders else { return false }
             } else {
                 guard allowsFiles else { return false }
                 if !fileExtensions.isEmpty {
-                    let ext = url.pathExtension.lowercased()
-                    guard fileExtensions.contains(ext) else { return false }
+                    guard fileExtensions.contains(item.fileExtension) else { return false }
                 }
             }
         }
-        return matchesPaths(urls)
+        return matchesPaths(context)
     }
 
     static func normalizeExtensions(_ values: [String]) -> [String] {
@@ -117,15 +156,11 @@ struct ActionConditions: Codable, Equatable, Sendable {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    private func matchesPaths(_ urls: [URL]) -> Bool {
+    private func matchesPaths(_ context: ActionMatchContext) -> Bool {
         guard !pathPrefixes.isEmpty else { return true }
-        return urls.allSatisfy { url in
-            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-            return pathPrefixes.contains { rawPrefix in
-                let prefix = URL(fileURLWithPath: rawPrefix, isDirectory: true)
-                    .standardizedFileURL
-                    .resolvingSymlinksInPath()
-                    .path
+        let prefixes = pathPrefixes.map { context.resolvedPrefix($0) }
+        return context.resolvedPaths.allSatisfy { path in
+            return prefixes.contains { prefix in
                 if prefix == "/" {
                     return path.hasPrefix("/")
                 }
@@ -206,18 +241,18 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         switch kind {
         case .builtIn:
             switch builtInOperation {
-            case .copyPath: "复制所选项目的完整路径"
-            case .copyName: "复制所选项目的名称"
-            case .cut: "记录所选项目，稍后移动到目标文件夹"
-            case .paste: "把已剪切项目移动到当前文件夹"
-            case nil: "基础 Finder 动作"
+            case .copyPath: L10n.tr("复制所选项目的完整路径")
+            case .copyName: L10n.tr("复制所选项目的名称")
+            case .cut: L10n.tr("记录所选项目，稍后移动到目标文件夹")
+            case .paste: L10n.tr("把已剪切项目移动到当前文件夹")
+            case nil: L10n.tr("基础 Finder 动作")
             }
-        case .application: targetPath ?? "选择一个应用"
-        case .terminal: targetPath ?? "选择一个终端应用"
-        case .directory: targetPath ?? "选择一个常用目录"
-        case .template: "新建 .\(normalizedTemplateExtension) 文件"
-        case .shell: "通过 zsh 执行；所选路径作为位置参数传入"
-        case .appleScript: "通过 osascript 执行；所选路径作为参数传入"
+        case .application: targetPath ?? L10n.tr("选择一个应用")
+        case .terminal: targetPath ?? L10n.tr("选择一个终端应用")
+        case .directory: targetPath ?? L10n.tr("选择一个常用目录")
+        case .template: L10n.tr("新建 .%@ 文件", String(describing: normalizedTemplateExtension))
+        case .shell: L10n.tr("通过 zsh 执行；所选路径作为位置参数传入")
+        case .appleScript: L10n.tr("通过 osascript 执行；所选路径作为参数传入")
         }
     }
 
@@ -396,6 +431,78 @@ struct ConfigurationLoadResult: Equatable, Sendable {
     var recoveredFromLastKnownGood: Bool
 }
 
+final class SharedConfigurationCache {
+    private let defaults: UserDefaults
+    private var configurationData: Data?
+    private var backupData: Data?
+    private var cached: AssistantConfiguration?
+
+    init(defaults: UserDefaults = SharedPreferences.defaults) {
+        self.defaults = defaults
+    }
+
+    func configuration() -> AssistantConfiguration {
+        defaults.synchronize()
+        let data = defaults.data(forKey: SharedPreferences.configurationKey)
+        let backup = defaults.data(forKey: SharedPreferences.lastKnownGoodConfigurationKey)
+        if let cached, data != nil, data == configurationData, backup == backupData { return cached }
+        let configuration = SharedPreferences.configuration(defaults: defaults)
+        // Keep the pre-load fingerprint. Recovery or another process may write
+        // during loading; the next menu then reloads instead of caching stale data.
+        configurationData = data
+        backupData = backup
+        cached = configuration
+        return configuration
+    }
+}
+
+enum ConfigurationTransfer {
+    enum TransferError: LocalizedError {
+        case unsupportedVersion(Int)
+        case invalidConfiguration
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedVersion(let version): L10n.tr("无法导入版本 %@ 的配置，请使用兼容版本的右键助手。", String(describing: version))
+            case .invalidConfiguration: L10n.tr("配置格式无效，或包含重复标识、空名称或无效分组。")
+            }
+        }
+    }
+
+    private struct Envelope: Decodable {
+        let version: Int
+        let actions: [ConfiguredAction]
+        let groups: [ActionGroup]
+        let showsFavoritesAtTopLevel: Bool?
+    }
+
+    static func decode(_ data: Data) throws -> AssistantConfiguration {
+        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        guard (1...AssistantConfiguration.currentVersion).contains(envelope.version) else {
+            throw TransferError.unsupportedVersion(envelope.version)
+        }
+        let groupIDs = Set(envelope.groups.map(\.id))
+        guard Set(envelope.actions.map(\.id)).count == envelope.actions.count,
+              groupIDs.count == envelope.groups.count,
+              envelope.groups.allSatisfy({ !$0.id.isEmpty && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              envelope.actions.allSatisfy({ action in
+                  !action.id.isEmpty && !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && (action.groupID.map { groupIDs.contains($0) } ?? true)
+                      && (action.kind != .builtIn || action.builtInOperation != nil)
+              }) else { throw TransferError.invalidConfiguration }
+        return AssistantConfiguration(
+            version: envelope.version, actions: envelope.actions, groups: envelope.groups,
+            showsFavoritesAtTopLevel: envelope.showsFavoritesAtTopLevel ?? true
+        ).normalized()
+    }
+
+    static func encode(_ configuration: AssistantConfiguration) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(configuration.normalized())
+    }
+}
+
 struct ExecutionRequest: Codable, Equatable, Sendable {
     let id: String
     let actionID: String
@@ -412,6 +519,7 @@ enum SharedPreferences {
     static let suiteName = "com.local.RightClickAssistant.shared"
     static let configurationKey = "configurationV2"
     static let cutPathsKey = "cutPathsV2"
+    static let cutBatchIDKey = "cutBatchIDV1"
     static let lastKnownGoodConfigurationKey = "configurationV2.lastKnownGood"
     static let configurationRecoveryDataKey = "configurationV2.recoveryData"
     static let previousConfigurationRecoveryDataKey = "configurationV2.previousRecoveryData"
@@ -708,4 +816,45 @@ private struct LegacyApplicationAction: Codable {
     let applicationPath: String
     let menuTitle: String
     let isEnabled: Bool
+}
+
+extension ConfiguredAction {
+    var localizedTitle: String { displayTitle(language: .current) }
+
+    func displayTitle(language: AppLanguage) -> String {
+        let standard: String?
+        switch kind {
+        case .builtIn:
+            switch builtInOperation {
+            case .copyPath: standard = "复制路径"
+            case .copyName: standard = "复制文件名"
+            case .cut: standard = "剪切"
+            case .paste: standard = "粘贴已剪切项目"
+            case nil: standard = nil
+            }
+        case .terminal: standard = "在终端打开"
+        case .application: standard = "使用应用打开"
+        case .directory: standard = "打开常用目录"
+        case .template: standard = title == "新建文本文件" ? "新建文本文件" : "新建文件"
+        case .shell: standard = "运行 Shell 脚本"
+        case .appleScript: standard = "运行 AppleScript"
+        }
+        if title == standard { return L10n.text(title, language: language) }
+        if kind == .directory, let targetPath {
+            let name = URL(fileURLWithPath: targetPath).lastPathComponent
+            if title == "打开 \(name)" { return L10n.text("打开 %@", arguments: [name], language: language) }
+        }
+        return title
+    }
+}
+
+extension ActionGroup {
+    var localizedTitle: String { displayTitle(language: .current) }
+
+    func displayTitle(language: AppLanguage) -> String {
+        if (id == "files" && title == "文件") || (id == "open" && title == "打开方式") {
+            return L10n.text(title, language: language)
+        }
+        return title
+    }
 }

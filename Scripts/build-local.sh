@@ -17,6 +17,8 @@ xcodebuild \
   -configuration Release \
   -destination "platform=macOS" \
   -derivedDataPath "${DERIVED_DATA_DIR}" \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_IDENTITY=- \
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
   CODE_SIGN_STYLE=Manual \

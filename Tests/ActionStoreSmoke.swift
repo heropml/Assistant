@@ -1,10 +1,28 @@
+import AppKit
 import Darwin
 import Foundation
+
+private final class LockedTestResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored.append(value)
+    }
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
 
 @main
 @MainActor
 struct ActionStoreSmoke {
-    static func main() throws {
+    static func main() async throws {
         let manager = FileManager.default
         let root = manager.temporaryDirectory
             .appendingPathComponent("RightClickAssistantExecutor-\(UUID().uuidString)", isDirectory: true)
@@ -27,8 +45,131 @@ struct ActionStoreSmoke {
         testInfiniteOutputCannotBypassTimeout(in: root, defaults: defaults)
         testScriptTimeoutTerminatesChildren(in: root, defaults: defaults)
         testSortingPersistence(defaults: defaults)
+        testExecutionSession()
+        testCutBatchCoordination(defaults: defaults)
+        try testConcurrentTemplateCreation(in: root)
+        try testDanglingTemplateName(in: root)
+        try testImportPersistence(defaults: defaults)
+        try await testExecutionFeedback(in: root, defaults: defaults)
 
         print("宿主执行器测试通过")
+    }
+
+    private static func testExecutionSession() {
+        var session = ExecutionSession()
+        let first = session.begin(terminateAfterExecution: true)
+        let second = session.begin(terminateAfterExecution: false)
+        precondition(!session.finish(first), "首个任务完成不能终止其他任务")
+        precondition(!session.finish(UUID()), "未知任务不能触发退出")
+        precondition(session.finish(second))
+        precondition(!session.finish(second), "重复完成不能重复退出")
+
+        var reversed = ExecutionSession()
+        let slow = reversed.begin(terminateAfterExecution: true)
+        let fast = reversed.begin(terminateAfterExecution: false)
+        precondition(!reversed.finish(fast))
+        precondition(reversed.finish(slow))
+
+        var foreground = ExecutionSession()
+        let running = foreground.begin(terminateAfterExecution: true)
+        foreground.keepRunning()
+        precondition(!foreground.finish(running), "用户打开主窗口后应保留应用")
+        let next = foreground.begin(terminateAfterExecution: false)
+        precondition(!foreground.finish(next))
+    }
+
+    private static func testCutBatchCoordination(defaults: UserDefaults) {
+        let clipboard = CutClipboard()
+        clipboard.replace(paths: ["/old-a", "/old-b"], defaults: defaults)
+        let old = clipboard.snapshot(defaults: defaults)
+        clipboard.replace(paths: ["/new"], defaults: defaults)
+        clipboard.complete(old, remaining: ["/old-b"], defaults: defaults)
+        precondition(clipboard.snapshot(defaults: defaults).paths == ["/new"])
+
+        // Even cutting the exact same paths again creates a new batch.
+        let previous = clipboard.snapshot(defaults: defaults)
+        clipboard.replace(paths: previous.paths, defaults: defaults)
+        clipboard.complete(previous, remaining: [], defaults: defaults)
+        precondition(clipboard.snapshot(defaults: defaults).paths == previous.paths)
+        let current = clipboard.snapshot(defaults: defaults)
+        clipboard.complete(current, remaining: ["/failed"], defaults: defaults)
+        precondition(clipboard.snapshot(defaults: defaults).paths == ["/failed"])
+
+        precondition(clipboard.beginPaste())
+        let result = LockedTestResults()
+        DispatchQueue.global().sync {
+            if clipboard.beginPaste() {
+                result.append("重复粘贴进入临界区")
+                clipboard.endPaste()
+            }
+        }
+        clipboard.endPaste()
+        precondition(result.values.isEmpty)
+        precondition(clipboard.beginPaste())
+        clipboard.endPaste()
+    }
+
+    private static func testConcurrentTemplateCreation(in root: URL) throws {
+        let directory = root.appendingPathComponent("concurrent-templates", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("existing".utf8).write(to: directory.appendingPathComponent("文稿.txt"))
+        let errors = LockedTestResults()
+        DispatchQueue.concurrentPerform(iterations: 64) { index in
+            let action = ConfiguredAction(
+                kind: .template, title: "新建文稿", templateExtension: "txt", templateContent: "payload-\(index)"
+            )
+            do {
+                try HostActionExecutor.execute(action: action, urls: [directory], revealCreatedFiles: false)
+            } catch { errors.append(error.localizedDescription) }
+        }
+        precondition(errors.values.isEmpty, "并发新建失败：\(errors.values)")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        precondition(files.count == 65, "并发新建丢失文件")
+        let contents = try Set(files.map { try String(contentsOf: $0, encoding: .utf8) })
+        precondition(contents == Set(["existing"] + (0..<64).map { "payload-\($0)" }), "文件内容被覆盖")
+    }
+
+    private static func testDanglingTemplateName(in root: URL) throws {
+        let directory = root.appendingPathComponent("dangling-template", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let link = directory.appendingPathComponent("文稿.txt")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "missing.txt")
+        let action = ConfiguredAction(kind: .template, title: "新建文稿", templateExtension: "txt", templateContent: "new")
+        try HostActionExecutor.execute(action: action, urls: [directory], revealCreatedFiles: false)
+        let destination = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        precondition(destination == "missing.txt")
+        let contents = try String(contentsOf: directory.appendingPathComponent("文稿 2.txt"), encoding: .utf8)
+        precondition(contents == "new")
+    }
+
+    private static func testImportPersistence(defaults: UserDefaults) throws {
+        let store = ActionStore(defaults: defaults)
+        let imported = AssistantConfiguration(actions: [ConfiguredAction(kind: .shell, title: "导入脚本", script: "echo imported")], groups: [])
+        store.importConfiguration(try ConfigurationTransfer.decode(ConfigurationTransfer.encode(imported)))
+        precondition(store.configuration == imported)
+        precondition(ActionStore(defaults: defaults).configuration == imported)
+    }
+
+    private static func testExecutionFeedback(in root: URL, defaults: UserDefaults) async throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let store = ActionStore(defaults: defaults)
+        let slow = ConfiguredAction(kind: .shell, title: "慢动作", script: "/bin/sleep 0.3")
+        let fast = ConfiguredAction(kind: .shell, title: "快动作", script: ":")
+        store.importConfiguration(AssistantConfiguration(actions: [slow, fast], groups: []))
+        for action in [slow, fast] {
+            let url = SharedPreferences.executionURL(actionID: action.id, urls: [root], isContainer: true, defaults: defaults)!
+            store.handleExecutionURL(url, terminateAfterExecution: false)
+        }
+        precondition(store.runningExecutionCount == 2)
+        precondition(store.executions.allSatisfy { $0.finishedAt == nil })
+        let deadline = Date().addingTimeInterval(10)
+        while store.runningExecutionCount > 0 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        precondition(store.runningExecutionCount == 0, "执行状态未结束")
+        precondition(store.executions.count == 2)
+        precondition(store.executions.allSatisfy { $0.outcome == .succeeded && $0.finishedAt != nil })
+        precondition(store.executions[0].finishedAt! >= store.executions[1].finishedAt!)
     }
 
     private static func testSortingPersistence(defaults: UserDefaults) {

@@ -13,6 +13,27 @@
 - Shell 脚本通过 zsh 执行，所选路径作为位置参数传入，当前目录通过 `$RCA_DIRECTORY` 提供
 - AppleScript 通过 `osascript` 执行，所选路径传给 `on run argv`
 - V1 配置自动迁移到版本化 V2 配置
+- 配置备份：窗口右上角「配置备份」导出 JSON；导入前校验版本和内容，并确认动作、分组及脚本数量后替换当前配置
+- 执行反馈：菜单栏显示运行中的动作数，主窗口可展开本次运行记录，保留最近 20 条完成结果及失败详情
+- 并发保护：后台等待全部已接收动作完成后退出；新建模板不覆盖同名文件；粘贴期间的新剪切不会被旧任务清空
+
+执行记录仅保留在本次进程中。通过 Finder 临时启动的后台进程完成后自动退出；执行期间从菜单栏打开主窗口可保留应用和记录。
+
+## 核心测试（无需打包）
+
+```sh
+./Scripts/test-core.sh
+```
+
+覆盖配置导入导出、菜单缓存失效、条件查询复用、任务退出顺序、剪切批次、64 路并发新建及原有脚本执行测试，并对主应用和 Finder 扩展做 Swift 6 严格并发类型检查。
+
+仅安装 Command Line Tools，或完整 Xcode 暂不可用时，可以运行：
+
+```sh
+DEVELOPER_DIR=/Library/Developer/CommandLineTools ./Scripts/test-core.sh
+```
+
+若预览版 SDK 的 SwiftUI 宏插件缺失，可通过 `SDKROOT` 指定本机已安装的稳定 SDK，例如在上述命令前再设置 `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`。
 
 ## 直接使用（无需开发者账号）
 
@@ -30,3 +51,25 @@
 ```bash
 ./Scripts/verify-local.sh
 ```
+
+## GitHub 更新（v1.0.0 起）
+
+窗口右下角显示应用版本，点击「检查更新」读取 GitHub 的版本清单。新版本会展示更新说明，用户确认下载后显示进度；下载完成后校验文件大小和 SHA-256，再打开 ARM DMG。退出旧应用后，将新版拖入「应用程序」替换，现有动作配置保留。检查和下载均可取消，不会在后台自动安装。
+
+更新流程与 SerialTool 的 macOS 版本一致，清单使用 `version`、`url_mac`（单个 HTTPS 地址或地址数组）、`sha256_mac`、`size_mac`、`notes`，并增加 `arch_mac: "arm64"`。GitHub 下载地址优先。
+
+当前更新清单地址为 `https://raw.githubusercontent.com/heropml/Assistant/main/latest.json`。清单及安装包需要允许公开访问。若更换发布仓库，须同步修改主应用 `Info.plist` 中的 `RCAUpdateManifestURL`、`RCAReleasesURL`。客户端不内置 GitHub Token。
+
+发版流程：
+
+1. 更新 Xcode 项目的 `MARKETING_VERSION`（正式版本，如 `1.0.1`）及 `CURRENT_PROJECT_VERSION`，构建 ARM 应用。
+2. 执行 `./Scripts/package-update.sh "本次更新说明"`，生成版本化 ARM DMG 和包含实际校验值的 `dist/latest.json`。独立发布仓库可用 `RCA_RELEASE_REPOSITORY=owner/repo` 指定。
+3. 将 DMG 上传至对应公开仓库的 `v<版本号>` Release，再将生成的清单发布到客户端配置的 `latest.json` 地址。须先上传安装包再更新清单。
+
+打包脚本只在本地生成文件，不会创建 Release、推送代码或改变仓库可见性。`Scripts/test-core.sh` 包含版本比较、更新清单解析、校验失败、404 和取消请求的回归测试。
+
+## 名称与中英文切换
+
+主窗口右上角的地球图标可切换「简体中文 / English」，设置页也提供相同选项。主界面、执行反馈、更新窗口及下一次打开的 Finder 菜单会即时使用所选语言。默认动作和默认分组按显示语言翻译，自定义名称、脚本、模板内容及已有配置不会因语言切换而改写。
+
+应用名称为「右键助手 / Right-Click Assistant」。本地化的应用名称和 macOS 系统菜单会在退出并重新打开应用后刷新。应用及扩展都包含中英文 `InfoPlist.strings`；打包时须保留两组 `.lproj` 资源。

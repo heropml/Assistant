@@ -7,8 +7,6 @@ APP="${PROJECT_DIR}/dist/RightClickAssistant.app"
 EXTENSION="${APP}/Contents/PlugIns/RightClickFinderExtension.appex"
 ZIP="${PROJECT_DIR}/dist/RightClickAssistant-macOS.zip"
 UNPACK_DIR="/tmp/RightClickAssistantVerify"
-TEST_BINARY="/tmp/RightClickAssistantPreferencesSmoke"
-EXECUTOR_TEST_BINARY="/tmp/RightClickAssistantExecutorSmoke"
 ENTITLEMENTS_FILE="/tmp/RightClickAssistantExtensionEntitlements.plist"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister"
 
@@ -20,6 +18,8 @@ xcodebuild \
   -configuration Debug \
   -destination "platform=macOS" \
   -derivedDataPath /tmp/RightClickAssistantDebugDerivedData \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_IDENTITY=- \
   CODE_SIGN_STYLE=Manual \
   DEVELOPMENT_TEAM= \
@@ -30,25 +30,7 @@ if [[ -x "${LSREGISTER}" ]]; then
   "${LSREGISTER}" -u "/tmp/RightClickAssistantDebugDerivedData/Build/Products/Debug/RightClickAssistant.app" >/dev/null 2>&1 || :
 fi
 
-swiftc \
-  -warnings-as-errors \
-  -strict-concurrency=complete \
-  -module-cache-path /tmp/RightClickAssistantModuleCache \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Tests/SharedPreferencesSmoke.swift" \
-  -o "${TEST_BINARY}"
-"${TEST_BINARY}"
-
-swiftc \
-  -warnings-as-errors \
-  -strict-concurrency=complete \
-  -module-cache-path /tmp/RightClickAssistantModuleCache \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/RightClickAssistant/ActionStore.swift" \
-  "${PROJECT_DIR}/Tests/ActionStoreSmoke.swift" \
-  -o "${EXECUTOR_TEST_BINARY}"
-"${EXECUTOR_TEST_BINARY}"
-"${EXECUTOR_TEST_BINARY}" 0<&- 1>&-
+"${PROJECT_DIR}/Scripts/test-core.sh"
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP}"
 /usr/bin/codesign --verify --strict --verbose=2 "${EXTENSION}"
@@ -69,9 +51,9 @@ SHARED_DOMAIN="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.temporary
 ! /usr/libexec/PlistBuddy -c 'Print :com.apple.security.temporary-exception.shared-preference.read-only' "${ENTITLEMENTS_FILE}" >/dev/null 2>&1
 
 ARCHITECTURES="$(/usr/bin/lipo -archs "${APP}/Contents/MacOS/RightClickAssistant")"
-[[ "${ARCHITECTURES}" == *arm64* && "${ARCHITECTURES}" == *x86_64* ]]
+[[ "${ARCHITECTURES}" == arm64 ]]
 EXTENSION_ARCHITECTURES="$(/usr/bin/lipo -archs "${EXTENSION}/Contents/MacOS/RightClickFinderExtension")"
-[[ "${EXTENSION_ARCHITECTURES}" == *arm64* && "${EXTENSION_ARCHITECTURES}" == *x86_64* ]]
+[[ "${EXTENSION_ARCHITECTURES}" == arm64 ]]
 
 EXTENSION_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "${EXTENSION}/Contents/Info.plist")"
 [[ "${EXTENSION_POINT}" == "com.apple.FinderSync" ]]
@@ -113,4 +95,4 @@ mkdir -p "${UNPACK_DIR}"
 /usr/bin/ditto -x -k "${ZIP}" "${UNPACK_DIR}"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${UNPACK_DIR}/RightClickAssistant.app"
 
-print "完整验证通过（配置、执行器、大小图标、图标缓存刷新标记、菜单栏/Finder 模板图标、动作原色图标、Debug/Release 代码、双架构、嵌套扩展、本地签名、ZIP 解包）"
+print "完整验证通过（配置、执行器、大小图标、图标缓存刷新标记、菜单栏/Finder 模板图标、动作原色图标、Debug/Release 代码、arm64 架构、嵌套扩展、本地签名、ZIP 解包）"

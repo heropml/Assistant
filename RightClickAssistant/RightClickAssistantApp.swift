@@ -3,14 +3,16 @@ import SwiftUI
 
 @main
 struct RightClickAssistantApp: App {
+    @ObservedObject private var language = LanguageStore.shared
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var store = ActionStore()
     @State private var isMenuBarExtraInserted = true
 
     var body: some Scene {
-        WindowGroup("右键助手", id: "main") {
+        WindowGroup(L10n.tr("右键助手"), id: "main") {
             ContentView()
                 .environmentObject(store)
+                .environment(\.locale, language.locale)
                 .frame(minWidth: 820, minHeight: 600)
                 .onOpenURL {
                     store.handleExecutionURL(
@@ -25,13 +27,22 @@ struct RightClickAssistantApp: App {
         Settings {
             SettingsView()
                 .environmentObject(store)
+                .environment(\.locale, language.locale)
+                .onAppear { store.keepRunning() }
         }
 
         MenuBarExtra(isInserted: $isMenuBarExtraInserted) {
             AssistantMenuBarContent()
+                .environmentObject(store)
+                .environment(\.locale, language.locale)
         } label: {
-            Label("右键助手", image: "AssistantMark")
-                .labelStyle(.iconOnly)
+            HStack(spacing: 4) {
+                Label(L10n.tr("右键助手"), image: "AssistantMark")
+                    .labelStyle(.iconOnly)
+                if store.runningExecutionCount > 0 {
+                    Text("\(store.runningExecutionCount)")
+                }
+            }
         }
         .menuBarExtraStyle(.menu)
     }
@@ -70,6 +81,11 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        presentUserInterface()
+        return true
+    }
+
     private func presentUserInterface() {
         let application = NSApplication.shared
         application.setActivationPolicy(.regular)
@@ -79,18 +95,27 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct AssistantMenuBarContent: View {
+    @ObservedObject private var language = LanguageStore.shared
+    @EnvironmentObject private var store: ActionStore
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        if !store.executions.isEmpty {
+            Text(store.runningExecutionCount > 0 ? L10n.tr("正在执行 %@ 个动作", String(describing: store.runningExecutionCount)) : L10n.tr("最近执行"))
+            ForEach(Array(store.executions.prefix(5))) { execution in
+                Text(execution.summary)
+            }
+            Divider()
+        }
         Button {
             showMainWindow()
         } label: {
-            Label("打开右键助手", systemImage: "macwindow")
+            Label(L10n.tr("打开右键助手"), systemImage: "macwindow")
         }
         .keyboardShortcut("o")
 
         SettingsLink {
-            Label("扩展设置…", systemImage: "gearshape")
+            Label(L10n.tr("扩展设置…"), systemImage: "gearshape")
         }
 
         Divider()
@@ -98,14 +123,16 @@ private struct AssistantMenuBarContent: View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            Label("退出右键助手", systemImage: "power")
+            Label(L10n.tr("退出右键助手"), systemImage: "power")
         }
         .keyboardShortcut("q")
     }
 
     private func showMainWindow() {
+        store.keepRunning()
         let application = NSApplication.shared
-        if let window = application.windows.first(where: { $0.title == "右键助手" }) {
+        application.setActivationPolicy(.regular)
+        if let window = application.windows.first(where: { AppLanguage.allCases.map(\.appName).contains($0.title) }) {
             if window.isMiniaturized {
                 window.deminiaturize(nil)
             }

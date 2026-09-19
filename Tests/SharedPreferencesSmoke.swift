@@ -1,5 +1,14 @@
 import Foundation
 
+private final class CountingFileManager: FileManager, @unchecked Sendable {
+    private(set) var queryCount = 0
+
+    override func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        queryCount += 1
+        return super.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+}
+
 @main
 struct SharedPreferencesSmoke {
     static func main() throws {
@@ -18,8 +27,93 @@ struct SharedPreferencesSmoke {
         try testConfigurationRecovery(defaults)
         try testForwardCompatibleDecode()
         testExecutionURL(defaults)
+        try testConfigurationTransfer()
+        try testConfigurationCache(defaults)
+        try testSharedMatchContext()
 
         print("V3 共享配置测试通过")
+    }
+
+    private static func testConfigurationTransfer() throws {
+        let original = AssistantConfiguration.defaultValue
+        let restored = try ConfigurationTransfer.decode(ConfigurationTransfer.encode(original))
+        precondition(restored == original.normalized())
+        let empty = AssistantConfiguration(actions: [], groups: [])
+        let emptyRestored = try ConfigurationTransfer.decode(ConfigurationTransfer.encode(empty))
+        precondition(emptyRestored == empty)
+
+        var future = original
+        future.version = AssistantConfiguration.currentVersion + 1
+        var duplicate = original
+        duplicate.actions.append(duplicate.actions[0])
+        var orphan = original
+        orphan.actions[0].groupID = "missing-group"
+        var blank = original
+        blank.actions[0].title = "  "
+        var malformedBuiltIn = original
+        malformedBuiltIn.actions[0].builtInOperation = nil
+        let invalidData = try [future, duplicate, orphan, blank, malformedBuiltIn].map { try JSONEncoder().encode($0) }
+            + [Data("{}".utf8), Data("not-json".utf8)]
+        for data in invalidData {
+            do {
+                _ = try ConfigurationTransfer.decode(data)
+                preconditionFailure("无效导入必须被拒绝")
+            } catch {}
+        }
+        var older = original
+        older.version = 2
+        let upgraded = try ConfigurationTransfer.decode(JSONEncoder().encode(older))
+        precondition(upgraded == older.normalized())
+    }
+
+    private static func testConfigurationCache(_ defaults: UserDefaults) throws {
+        let cache = SharedConfigurationCache(defaults: defaults)
+        var configuration = AssistantConfiguration.defaultValue
+        precondition(SharedPreferences.saveConfiguration(configuration, defaults: defaults))
+        precondition(cache.configuration() == configuration)
+        precondition(cache.configuration() == configuration)
+        configuration.actions[0].isEnabled.toggle()
+        precondition(SharedPreferences.saveConfiguration(configuration, defaults: defaults))
+        precondition(cache.configuration() == configuration, "缓存必须读取配置变更")
+        defaults.set(Data("corrupt".utf8), forKey: SharedPreferences.configurationKey)
+        precondition(cache.configuration() == configuration, "损坏配置仍应恢复备份")
+        defaults.removeObject(forKey: SharedPreferences.configurationKey)
+        precondition(cache.configuration() == configuration)
+        let empty = AssistantConfiguration(actions: [], groups: [])
+        precondition(SharedPreferences.saveConfiguration(empty, defaults: defaults))
+        precondition(cache.configuration() == empty, "导入空配置后不能显示旧动作")
+    }
+
+    private static func testSharedMatchContext() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("readme.MD")
+        try Data().write(to: file)
+        let manager = CountingFileManager()
+        let context = ActionMatchContext(urls: [file, directory], isContainer: false, fileManager: manager)
+        let unrestricted = ActionConditions()
+        let scoped = ActionConditions(fileExtensions: ["md"], pathPrefixes: [directory.path])
+        for _ in 0..<100 {
+            precondition(unrestricted.matches(context: context))
+            precondition(scoped.matches(context: context))
+        }
+        precondition(manager.queryCount == 2, "各动作应复用文件元数据")
+        precondition(!ActionConditions(allowsFolders: false).matches(context: context))
+        precondition(!ActionConditions(maximumSelectionCount: 1).matches(context: context))
+
+        let container = ActionMatchContext(urls: [directory], isContainer: true, fileManager: manager)
+        precondition(scoped.matches(context: container))
+        precondition(manager.queryCount == 2, "空白处条件无需查询文件类型")
+        precondition(!ActionConditions(allowsContainer: false).matches(context: container))
+        precondition(!ActionConditions().matches(context: ActionMatchContext(urls: [], isContainer: false)))
+
+        let alias = directory.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        let aliased = ActionMatchContext(urls: [alias.appendingPathComponent("readme.MD")], isContainer: false)
+        precondition(scoped.matches(context: aliased), "符号链接仍应匹配真实路径")
+        let sibling = ActionMatchContext(urls: [URL(fileURLWithPath: directory.path + "-other/readme.MD")], isContainer: false)
+        precondition(!scoped.matches(context: sibling), "路径前缀必须匹配目录边界")
     }
 
     private static func testDefaults(_ defaults: UserDefaults) {

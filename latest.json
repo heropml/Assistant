@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "url_mac": [
+    "https://github.com/heropml/Assistant/releases/download/v1.0.0/RightClickAssistant_v1.0.0_arm64.dmg"
+  ],
+  "arch_mac": "arm64",
+  "sha256_mac": "c4e20e37613f9593f12121e41570fa0539f96c48c7b460072acecfe869c7764d",
+  "size_mac": 2174161,
+  "notes": "中英文界面切换、本地化应用名称及 Finder 菜单。"
+}

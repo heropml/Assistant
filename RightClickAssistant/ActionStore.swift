@@ -2,11 +2,93 @@ import AppKit
 import Darwin
 import Foundation
 
+struct ExecutionSession {
+    private var activeIDs = Set<UUID>()
+    private var exitsWhenIdle = false
+
+    mutating func begin(terminateAfterExecution: Bool) -> UUID {
+        exitsWhenIdle = exitsWhenIdle || terminateAfterExecution
+        let id = UUID()
+        activeIDs.insert(id)
+        return id
+    }
+
+    mutating func keepRunning() { exitsWhenIdle = false }
+
+    mutating func finish(_ id: UUID) -> Bool {
+        guard activeIDs.remove(id) != nil else { return false }
+        return exitsWhenIdle && activeIDs.isEmpty
+    }
+}
+
+struct ActionExecution: Identifiable {
+    enum Outcome: Equatable {
+        case running, succeeded, failed(String)
+    }
+
+    let id: UUID
+    let action: ConfiguredAction
+    var title: String { action.localizedTitle }
+    let startedAt = Date()
+    var finishedAt: Date?
+    var outcome: Outcome = .running
+
+    var summary: String {
+        switch outcome {
+        case .running: L10n.tr("正在执行：%@", String(describing: title))
+        case .succeeded: L10n.tr("已完成：%@", String(describing: title))
+        case .failed: L10n.tr("执行失败：%@", String(describing: title))
+        }
+    }
+}
+
+// The host owns cut/paste. Separate locks let a new cut replace the clipboard
+// during a long move, while allowing only one paste to consume a batch.
+final class CutClipboard: @unchecked Sendable {
+    struct Batch {
+        let id: String?
+        let paths: [String]
+    }
+
+    private let stateLock = NSLock()
+    private let pasteLock = NSLock()
+
+    func replace(paths: [String], defaults: UserDefaults) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        defaults.set(UUID().uuidString, forKey: SharedPreferences.cutBatchIDKey)
+        defaults.set(paths, forKey: SharedPreferences.cutPathsKey)
+        defaults.synchronize()
+    }
+
+    func snapshot(defaults: UserDefaults) -> Batch {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return Batch(
+            id: defaults.string(forKey: SharedPreferences.cutBatchIDKey),
+            paths: defaults.stringArray(forKey: SharedPreferences.cutPathsKey) ?? []
+        )
+    }
+
+    func complete(_ batch: Batch, remaining: [String], defaults: UserDefaults) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard defaults.string(forKey: SharedPreferences.cutBatchIDKey) == batch.id else { return }
+        defaults.set(remaining, forKey: SharedPreferences.cutPathsKey)
+        defaults.synchronize()
+    }
+
+    func beginPaste() -> Bool { pasteLock.try() }
+    func endPaste() { pasteLock.unlock() }
+}
+
 @MainActor
 final class ActionStore: ObservableObject {
     @Published private(set) var configuration: AssistantConfiguration
     @Published private(set) var configurationLoadIssue: ConfigurationLoadIssue?
     @Published private(set) var recoveredConfigurationFromLastKnownGood: Bool
+    @Published private(set) var executions: [ActionExecution] = []
+    private var executionSession = ExecutionSession()
 
     private let defaults: UserDefaults
 
@@ -23,6 +105,16 @@ final class ActionStore: ObservableObject {
 
     var actions: [ConfiguredAction] { configuration.actions }
     var groups: [ActionGroup] { configuration.groups }
+    var runningExecutionCount: Int { executions.filter { $0.outcome == .running }.count }
+
+    func keepRunning() {
+        executionSession.keepRunning()
+    }
+
+    func importConfiguration(_ imported: AssistantConfiguration) {
+        configuration = imported.normalized()
+        save()
+    }
     var enabledCount: Int { actions.filter(\.isEnabled).count }
     var favoriteCount: Int {
         guard configuration.showsFavoritesAtTopLevel else { return 0 }
@@ -173,18 +265,23 @@ final class ActionStore: ObservableObject {
     }
 
     func handleExecutionURL(_ url: URL, terminateAfterExecution: Bool) {
+        let executionID = executionSession.begin(terminateAfterExecution: terminateAfterExecution)
         let prepared: (action: ConfiguredAction, urls: [URL])
         do {
             prepared = try HostActionExecutor.prepareExecution(from: url, defaults: defaults)
         } catch let error as HostActionExecutor.ExecutionError {
             if error != .invalidRequest {
-                Self.showError("无法执行动作", detail: error.localizedDescription)
+                Self.showError(L10n.tr("无法执行动作"), detail: error.localizedDescription)
             }
-            terminateIfNeeded(terminateAfterExecution)
+            finishExecution(executionID)
             return
         } catch {
-            terminateIfNeeded(terminateAfterExecution)
+            finishExecution(executionID)
             return
+        }
+        executions.insert(ActionExecution(id: executionID, action: prepared.action), at: 0)
+        if NSApplication.shared.activationPolicy() == .prohibited {
+            NSApplication.shared.setActivationPolicy(.accessory)
         }
         if prepared.action.kind == .builtIn,
            prepared.action.builtInOperation == .copyPath
@@ -193,11 +290,12 @@ final class ActionStore: ObservableObject {
                 // NSPasteboard is an AppKit service and must be touched on the
                 // main thread. The remaining actions stay off-main because
                 // they can perform file I/O or launch external processes.
-                try HostActionExecutor.execute(action: prepared.action, urls: prepared.urls)
+                try HostActionExecutor.execute(action: prepared.action, urls: prepared.urls, defaults: defaults)
             } catch {
-                Self.showError("动作执行失败", detail: error.localizedDescription)
+                recordFailure(executionID, error: error)
+                Self.showError(L10n.tr("动作执行失败"), detail: error.localizedDescription)
             }
-            terminateIfNeeded(terminateAfterExecution)
+            finishExecution(executionID)
             return
         }
         Task {
@@ -206,15 +304,35 @@ final class ActionStore: ObservableObject {
                     try HostActionExecutor.execute(action: prepared.action, urls: prepared.urls)
                 }.value
             } catch {
-                Self.showError("动作执行失败", detail: error.localizedDescription)
+                recordFailure(executionID, error: error)
+                Self.showError(L10n.tr("动作执行失败"), detail: error.localizedDescription)
             }
-            terminateIfNeeded(terminateAfterExecution)
+            finishExecution(executionID)
         }
     }
 
-    private func terminateIfNeeded(_ shouldTerminate: Bool) {
-        guard shouldTerminate else { return }
-        NSApplication.shared.terminate(nil)
+    private func recordFailure(_ id: UUID, error: Error) {
+        guard let index = executions.firstIndex(where: { $0.id == id }) else { return }
+        executions[index].outcome = .failed(error.localizedDescription)
+    }
+
+    private func finishExecution(_ id: UUID) {
+        if let index = executions.firstIndex(where: { $0.id == id }) {
+            var execution = executions.remove(at: index)
+            if execution.outcome == .running { execution.outcome = .succeeded }
+            execution.finishedAt = Date()
+            executions.insert(execution, at: 0)
+        }
+        // Keep every running action, plus the twenty most recent completed results.
+        var completedCount = 0
+        executions = executions.filter {
+            guard $0.finishedAt != nil else { return true }
+            completedCount += 1
+            return completedCount <= 20
+        }
+        if executionSession.finish(id), NSApplication.shared.activationPolicy() != .regular {
+            NSApplication.shared.terminate(nil)
+        }
     }
 
     private func update(_ id: String, change: (inout ConfiguredAction) -> Void) {
@@ -242,6 +360,7 @@ final class ActionStore: ObservableObject {
 
 enum HostActionExecutor {
     private static let scriptOutputLimit = 64 * 1024
+    private static let cutClipboard = CutClipboard()
 
     static func prepareExecution(
         from url: URL,
@@ -343,8 +462,7 @@ enum HostActionExecutor {
             try copy(urls.map(\.lastPathComponent).joined(separator: "\n"), to: pasteboard)
         case .cut:
             guard !urls.isEmpty else { throw ExecutionError.noSelection }
-            defaults.set(urls.map(\.path), forKey: SharedPreferences.cutPathsKey)
-            defaults.synchronize()
+            cutClipboard.replace(paths: urls.map(\.path), defaults: defaults)
         case .paste:
             guard let firstURL = urls.first else {
                 throw ExecutionError.noSelection
@@ -365,7 +483,10 @@ enum HostActionExecutor {
     }
 
     private static func pasteCutItems(into destination: URL, defaults: UserDefaults) throws {
-        let paths = defaults.stringArray(forKey: SharedPreferences.cutPathsKey) ?? []
+        guard cutClipboard.beginPaste() else { throw ExecutionError.pasteInProgress }
+        defer { cutClipboard.endPaste() }
+        let batch = cutClipboard.snapshot(defaults: defaults)
+        let paths = batch.paths
         guard !paths.isEmpty else { throw ExecutionError.nothingToPaste }
         let manager = FileManager.default
         var remaining: [String] = []
@@ -387,8 +508,7 @@ enum HostActionExecutor {
             }
         }
 
-        defaults.set(remaining, forKey: SharedPreferences.cutPathsKey)
-        defaults.synchronize()
+        cutClipboard.complete(batch, remaining: remaining, defaults: defaults)
         if let firstError { throw firstError }
     }
 
@@ -402,11 +522,22 @@ enum HostActionExecutor {
         let name = action.title.replacingOccurrences(of: "新建", with: "")
         let baseName = sanitizedFileComponent(name, fallback: "未命名文稿")
         let manager = FileManager.default
-        let target = availableURL(for: "\(baseName).\(ext)", in: safeDirectory, manager: manager)
-        guard target.deletingLastPathComponent().standardizedFileURL == safeDirectory.standardizedFileURL else {
-            throw ExecutionError.invalidFileName
+        let contents = Data((action.templateContent ?? "").utf8)
+        let target: URL
+        while true {
+            let candidate = availableURL(for: "\(baseName).\(ext)", in: safeDirectory, manager: manager)
+            guard candidate.deletingLastPathComponent().standardizedFileURL == safeDirectory.standardizedFileURL else {
+                throw ExecutionError.invalidFileName
+            }
+            do {
+                try contents.write(to: candidate, options: .withoutOverwriting)
+                target = candidate
+                break
+            } catch CocoaError.fileWriteFileExists {
+                // Another action claimed this name after the availability check.
+                continue
+            }
         }
-        try Data((action.templateContent ?? "").utf8).write(to: target, options: .atomic)
         if revealInFinder {
             NSWorkspace.shared.activateFileViewerSelecting([target])
         }
@@ -530,9 +661,9 @@ enum HostActionExecutor {
         guard exitStatus == 0 else {
             var message = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             if collector.wasTruncated {
-                message = (message ?? "") + "\n（输出已截断）"
+                message = (message ?? "") + L10n.tr("\n（输出已截断）")
             }
-            throw ExecutionError.scriptFailed(message?.isEmpty == false ? message! : "退出状态 \(exitStatus)")
+            throw ExecutionError.scriptFailed(message?.isEmpty == false ? message! : L10n.tr("退出状态 %@", String(describing: exitStatus)))
         }
     }
 
@@ -752,7 +883,7 @@ enum HostActionExecutor {
 
     private static func availableURL(for fileName: String, in directory: URL, manager: FileManager) -> URL {
         let original = directory.appendingPathComponent(fileName)
-        guard manager.fileExists(atPath: original.path) else { return original }
+        guard pathIsOccupied(original, manager: manager) else { return original }
         let source = URL(fileURLWithPath: fileName)
         let ext = source.pathExtension
         let stem = source.deletingPathExtension().lastPathComponent
@@ -760,15 +891,20 @@ enum HostActionExecutor {
         while true {
             let candidateName = ext.isEmpty ? "\(stem) \(index)" : "\(stem) \(index).\(ext)"
             let candidate = directory.appendingPathComponent(candidateName)
-            if !manager.fileExists(atPath: candidate.path) { return candidate }
+            if !pathIsOccupied(candidate, manager: manager) { return candidate }
             index += 1
         }
+    }
+
+    private static func pathIsOccupied(_ url: URL, manager: FileManager) -> Bool {
+        manager.fileExists(atPath: url.path) || (try? manager.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
     enum ExecutionError: LocalizedError, Equatable {
         case missingTarget
         case noSelection
         case nothingToPaste
+        case pasteInProgress
         case emptyScript
         case scriptFailed(String)
         case scriptTimedOut
@@ -785,22 +921,23 @@ enum HostActionExecutor {
 
         var errorDescription: String? {
             switch self {
-            case .missingTarget: "目标应用或目录不存在，请重新编辑此动作。"
-            case .noSelection: "没有可处理的文件或目录。"
-            case .nothingToPaste: "还没有剪切任何项目。"
-            case .emptyScript: "脚本内容为空。"
-            case let .scriptFailed(message): "脚本执行失败：\(message)"
-            case .scriptTimedOut: "脚本执行超过 30 秒，已停止脚本进程组。"
-            case .invalidRequest: "执行请求无效。"
-            case .actionDisabled: "该动作已被停用。"
-            case .conditionsNotMet: "当前文件或目录不符合动作执行条件。"
-            case .invalidFileName: "模板文件名无效。"
-            case .openFailed: "系统无法打开目标，请确认目标仍然可用。"
-            case .openTimedOut: "系统打开目标超时，请稍后重试。"
-            case let .processLaunchFailed(code): "脚本进程启动失败（错误码 \(code)）。"
-            case let .processWaitFailed(code): "等待脚本进程失败（错误码 \(code)）。"
-            case let .processIOFailed(code): "读取脚本输出失败（错误码 \(code)）。"
-            case .pasteboardWriteFailed: "无法写入系统剪贴板。"
+            case .missingTarget: L10n.tr("目标应用或目录不存在，请重新编辑此动作。")
+            case .noSelection: L10n.tr("没有可处理的文件或目录。")
+            case .nothingToPaste: L10n.tr("还没有剪切任何项目。")
+            case .pasteInProgress: L10n.tr("上一次粘贴仍在进行，请完成后再试。")
+            case .emptyScript: L10n.tr("脚本内容为空。")
+            case let .scriptFailed(message): L10n.tr("脚本执行失败：%@", String(describing: message))
+            case .scriptTimedOut: L10n.tr("脚本执行超过 30 秒，已停止脚本进程组。")
+            case .invalidRequest: L10n.tr("执行请求无效。")
+            case .actionDisabled: L10n.tr("该动作已被停用。")
+            case .conditionsNotMet: L10n.tr("当前文件或目录不符合动作执行条件。")
+            case .invalidFileName: L10n.tr("模板文件名无效。")
+            case .openFailed: L10n.tr("系统无法打开目标，请确认目标仍然可用。")
+            case .openTimedOut: L10n.tr("系统打开目标超时，请稍后重试。")
+            case let .processLaunchFailed(code): L10n.tr("脚本进程启动失败（错误码 %@）。", String(describing: code))
+            case let .processWaitFailed(code): L10n.tr("等待脚本进程失败（错误码 %@）。", String(describing: code))
+            case let .processIOFailed(code): L10n.tr("读取脚本输出失败（错误码 %@）。", String(describing: code))
+            case .pasteboardWriteFailed: L10n.tr("无法写入系统剪贴板。")
             }
         }
     }
