@@ -26,6 +26,7 @@ struct SharedPreferencesSmoke {
         try testV2GroupIconMigration(defaults)
         try testConfigurationRecovery(defaults)
         try testForwardCompatibleDecode()
+        try testPathCopyFormats()
         testExecutionURL(defaults)
         try testConfigurationTransfer()
         try testConfigurationCache(defaults)
@@ -338,6 +339,39 @@ struct SharedPreferencesSmoke {
         precondition(!action.isFavorite)
         precondition(action.symbolName == ActionKind.shell.symbolName)
         precondition(action.conditions.allowsContainer)
+    }
+
+    private static func testPathCopyFormats() throws {
+        let legacy = Data(#"{"kind":"builtIn","title":"复制路径","builtInOperation":"copyPath"}"#.utf8)
+        let restored = try JSONDecoder().decode(ConfiguredAction.self, from: legacy)
+        precondition(restored.pathCopyFormat == .absolute, "旧配置必须保持完整路径复制")
+        for format in PathCopyFormat.allCases {
+            var action = restored
+            action.pathCopyFormat = format
+            let decoded = try JSONDecoder().decode(ConfiguredAction.self, from: JSONEncoder().encode(action))
+            precondition(decoded == action, "路径格式必须随配置保存和导出")
+            precondition(format.text(for: []).isEmpty)
+        }
+
+        let urls = [URL(fileURLWithPath: "/work/项目 one/a.txt"), URL(fileURLWithPath: "/work/项目 two/b.md")]
+        precondition(PathCopyFormat.absolute.text(for: urls) == "/work/项目 one/a.txt\n/work/项目 two/b.md")
+        precondition(PathCopyFormat.relative.text(for: urls) == "项目 one/a.txt\n项目 two/b.md")
+        precondition(PathCopyFormat.relative.text(for: [urls[0]]) == "a.txt")
+        let sameFolder = [urls[0], URL(fileURLWithPath: "/work/项目 one/c.txt")]
+        precondition(PathCopyFormat.relative.text(for: sameFolder) == "a.txt\nc.txt")
+        let similarPrefixes = [URL(fileURLWithPath: "/a/b/item"), URL(fileURLWithPath: "/a/bc/item")]
+        precondition(PathCopyFormat.relative.text(for: similarPrefixes) == "b/item\nbc/item")
+        precondition(PathCopyFormat.relative.text(for: [URL(fileURLWithPath: "/")]) == ".")
+
+        let encodedURL = URL(fileURLWithPath: "/work/空 格#%.txt")
+        let fileLink = PathCopyFormat.fileURL.text(for: [encodedURL])
+        precondition(fileLink.hasPrefix("file:///work/"))
+        precondition(fileLink.contains("%20") && fileLink.contains("%23") && fileLink.contains("%25"))
+        precondition(URL(string: fileLink)?.path == encodedURL.path)
+        let markdownURL = URL(fileURLWithPath: "/work/a[b](c)*.txt")
+        precondition(PathCopyFormat.markdown.text(for: [markdownURL]) == "[a\\[b\\]\\(c\\)\\*\\.txt](<\(markdownURL.absoluteString)>)")
+        let hidden = [".gitignore", "archive.tar.gz", "README", "文件.md"].map { URL(fileURLWithPath: "/work/" + $0) }
+        precondition(PathCopyFormat.filenameWithoutExtension.text(for: hidden) == ".gitignore\narchive.tar\nREADME\n文件")
     }
 
     private static func testExecutionURL(_ defaults: UserDefaults) {

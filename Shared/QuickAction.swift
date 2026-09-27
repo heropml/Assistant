@@ -44,6 +44,79 @@ enum BuiltInOperation: String, Codable, Sendable {
     case paste
 }
 
+enum PathCopyFormat: String, Codable, CaseIterable, Identifiable, Sendable {
+    case absolute
+    case shellQuoted
+    case relative
+    case fileURL
+    case markdown
+    case filenameWithoutExtension
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .absolute: L10n.tr("绝对路径")
+        case .shellQuoted: L10n.tr("Shell 引号路径")
+        case .relative: L10n.tr("相对路径")
+        case .fileURL: L10n.tr("文件 URL")
+        case .markdown: L10n.tr("Markdown 链接")
+        case .filenameWithoutExtension: L10n.tr("无扩展名文件名")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .absolute: L10n.tr("复制所选项目的完整路径")
+        case .shellQuoted: L10n.tr("使用单引号保护路径，可直接作为 Shell 参数")
+        case .relative: L10n.tr("以所选项目所在目录的最近共同父目录为基准；单个项目以其父目录为基准")
+        case .fileURL: L10n.tr("复制 file:// 链接，空格等特殊字符会进行 URL 编码")
+        case .markdown: L10n.tr("以文件名作为文字，复制指向本地文件的 Markdown 链接")
+        case .filenameWithoutExtension: L10n.tr("复制名称并移除最后一个扩展名，保留隐藏文件名")
+        }
+    }
+
+    func text(for urls: [URL]) -> String {
+        let baseComponents = self == .relative ? Self.commonParentComponents(for: urls) : []
+        return urls.map { url in
+            switch self {
+            case .absolute:
+                return url.path
+            case .shellQuoted:
+                return "'" + url.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            case .relative:
+                let components = url.standardizedFileURL.pathComponents.dropFirst(baseComponents.count)
+                return components.isEmpty ? "." : components.joined(separator: "/")
+            case .fileURL:
+                return url.absoluteString
+            case .markdown:
+                let punctuation = CharacterSet(charactersIn: "\\`*_{}[]()#+-.!<>|~")
+                let label = url.lastPathComponent.unicodeScalars.map { scalar -> String in
+                    if CharacterSet.newlines.contains(scalar) { return " " }
+                    return punctuation.contains(scalar) ? "\\" + String(scalar) : String(scalar)
+                }.joined()
+                // An angle-bracket destination also handles parentheses in filenames.
+                let destination = url.absoluteString
+                    .replacingOccurrences(of: "<", with: "%3C")
+                    .replacingOccurrences(of: ">", with: "%3E")
+                return "[\(label)](<\(destination)>)"
+            case .filenameWithoutExtension:
+                return url.deletingPathExtension().lastPathComponent
+            }
+        }.joined(separator: "\n")
+    }
+
+    private static func commonParentComponents(for urls: [URL]) -> [String] {
+        guard let first = urls.first else { return [] }
+        var common = first.standardizedFileURL.deletingLastPathComponent().pathComponents
+        for url in urls.dropFirst() {
+            let parent = url.standardizedFileURL.deletingLastPathComponent().pathComponents
+            common = Array(zip(common, parent).prefix { $0 == $1 }.map(\.0))
+        }
+        return common
+    }
+}
+
 // A menu evaluation shares metadata across every action. Path resolution is lazy
 // because most actions have no path restrictions.
 final class ActionMatchContext {
@@ -181,6 +254,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
     var conditions: ActionConditions
 
     var builtInOperation: BuiltInOperation?
+    var pathCopyFormat: PathCopyFormat
     var targetPath: String?
     var bundleIdentifier: String?
     var templateExtension: String?
@@ -197,6 +271,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         groupID: String? = nil,
         conditions: ActionConditions = ActionConditions(),
         builtInOperation: BuiltInOperation? = nil,
+        pathCopyFormat: PathCopyFormat = .absolute,
         targetPath: String? = nil,
         bundleIdentifier: String? = nil,
         templateExtension: String? = nil,
@@ -212,6 +287,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         self.groupID = groupID
         self.conditions = conditions
         self.builtInOperation = builtInOperation
+        self.pathCopyFormat = pathCopyFormat
         self.targetPath = targetPath
         self.bundleIdentifier = bundleIdentifier
         self.templateExtension = templateExtension
@@ -230,6 +306,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         groupID = try container.decodeIfPresent(String.self, forKey: .groupID)
         conditions = try container.decodeIfPresent(ActionConditions.self, forKey: .conditions) ?? ActionConditions()
         builtInOperation = try container.decodeIfPresent(BuiltInOperation.self, forKey: .builtInOperation)
+        pathCopyFormat = try container.decodeIfPresent(PathCopyFormat.self, forKey: .pathCopyFormat) ?? .absolute
         targetPath = try container.decodeIfPresent(String.self, forKey: .targetPath)
         bundleIdentifier = try container.decodeIfPresent(String.self, forKey: .bundleIdentifier)
         templateExtension = try container.decodeIfPresent(String.self, forKey: .templateExtension)
@@ -241,7 +318,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         switch kind {
         case .builtIn:
             switch builtInOperation {
-            case .copyPath: L10n.tr("复制所选项目的完整路径")
+            case .copyPath: pathCopyFormat.detail
             case .copyName: L10n.tr("复制所选项目的名称")
             case .cut: L10n.tr("记录所选项目，稍后移动到目标文件夹")
             case .paste: L10n.tr("把已剪切项目移动到当前文件夹")
@@ -835,7 +912,14 @@ extension ConfiguredAction {
         case .terminal: standard = "在终端打开"
         case .application: standard = "使用应用打开"
         case .directory: standard = "打开常用目录"
-        case .template: standard = title == "新建文本文件" ? "新建文本文件" : "新建文件"
+        case .template:
+            switch title {
+            case "新建文本文件", "新建 Markdown 文件", "新建 JSON 文件", "新建 YAML 文件",
+                 "新建 Shell 文件", "新建 Python 文件", "新建 HTML 文件":
+                standard = title
+            default:
+                standard = "新建文件"
+            }
         case .shell: standard = "运行 Shell 脚本"
         case .appleScript: standard = "运行 AppleScript"
         }

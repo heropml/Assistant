@@ -5,6 +5,7 @@ PROJECT_DIR="${0:A:h:h}"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/RightClickAssistantTests.XXXXXX")"
 trap '/bin/rm -rf "${TEST_DIR}"' EXIT
 
+SHARED_SOURCES=("${PROJECT_DIR}"/Shared/*.swift)
 SWIFT_FLAGS=(
   -warnings-as-errors
   -swift-version 6
@@ -17,15 +18,13 @@ if [[ -n "${SDKROOT:-}" ]]; then
 fi
 
 swiftc "${SWIFT_FLAGS[@]}" \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Shared/Localization.swift" \
+  "${SHARED_SOURCES[@]}" \
   "${PROJECT_DIR}/Tests/SharedPreferencesSmoke.swift" \
   -o "${TEST_DIR}/PreferencesSmoke"
 "${TEST_DIR}/PreferencesSmoke"
 
 swiftc "${SWIFT_FLAGS[@]}" \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Shared/Localization.swift" \
+  "${SHARED_SOURCES[@]}" \
   "${PROJECT_DIR}/RightClickAssistant/ActionStore.swift" \
   "${PROJECT_DIR}/Tests/ActionStoreSmoke.swift" \
   -o "${TEST_DIR}/ExecutorSmoke"
@@ -33,23 +32,40 @@ swiftc "${SWIFT_FLAGS[@]}" \
 "${TEST_DIR}/ExecutorSmoke" 0<&- 1>&-
 
 swiftc "${SWIFT_FLAGS[@]}" \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Shared/Localization.swift" \
+  "${SHARED_SOURCES[@]}" \
   "${PROJECT_DIR}/RightClickAssistant/UpdateService.swift" \
   "${PROJECT_DIR}/Tests/UpdateSmoke.swift" \
   -o "${TEST_DIR}/UpdateSmoke"
 "${TEST_DIR}/UpdateSmoke"
 
 swiftc "${SWIFT_FLAGS[@]}" \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Shared/Localization.swift" \
+  "${SHARED_SOURCES[@]}" \
   "${PROJECT_DIR}/Tests/LocalizationSmoke.swift" \
   -o "${TEST_DIR}/LocalizationSmoke"
 "${TEST_DIR}/LocalizationSmoke"
 
+swiftc "${SWIFT_FLAGS[@]}" \
+  "${SHARED_SOURCES[@]}" \
+  "${PROJECT_DIR}/RightClickAssistant/ActionStore.swift" \
+  "${PROJECT_DIR}/Tests/TemplatePresetSmoke.swift" \
+  -o "${TEST_DIR}/TemplatePresetSmoke"
+"${TEST_DIR}/TemplatePresetSmoke"
+
+swiftc "${SWIFT_FLAGS[@]}" \
+  "${SHARED_SOURCES[@]}" \
+  "${PROJECT_DIR}/Tests/MenuPreviewSmoke.swift" \
+  -o "${TEST_DIR}/MenuPreviewSmoke"
+"${TEST_DIR}/MenuPreviewSmoke"
+
+swiftc "${SWIFT_FLAGS[@]}" \
+  "${SHARED_SOURCES[@]}" \
+  "${PROJECT_DIR}/RightClickAssistant/ApplicationRestart.swift" \
+  "${PROJECT_DIR}/Tests/ApplicationRestartSmoke.swift" \
+  -o "${TEST_DIR}/ApplicationRestartSmoke"
+"${TEST_DIR}/ApplicationRestartSmoke"
+
 swiftc "${SWIFT_FLAGS[@]}" -typecheck \
-  "${PROJECT_DIR}/Shared/QuickAction.swift" \
-  "${PROJECT_DIR}/Shared/Localization.swift" \
+  "${SHARED_SOURCES[@]}" \
   "${PROJECT_DIR}"/RightClickAssistant/*.swift
 swiftc "${SWIFT_FLAGS[@]}" -typecheck -application-extension \
   "${PROJECT_DIR}/Shared/QuickAction.swift" \

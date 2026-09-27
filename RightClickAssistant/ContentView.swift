@@ -13,6 +13,9 @@ struct ContentView: View {
     @State private var showsExecutionHistory = false
     @State private var transferError: String?
     @State private var showsUpdate = false
+    @State private var showsSetupGuide = false
+    @State private var showsMenuPreview = false
+    @AppStorage("hasSeenSetupGuideV1") private var hasSeenSetupGuide = false
     @StateObject private var updater = UpdateManager()
 
     var body: some View {
@@ -38,6 +41,19 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(isPresented: $showsUpdate) { UpdateView(updater: updater) }
+        .sheet(isPresented: $showsSetupGuide, onDismiss: { hasSeenSetupGuide = true }) {
+            SetupGuideView()
+        }
+        .sheet(isPresented: $showsMenuPreview) {
+            MenuPreviewView(configuration: store.configuration)
+        }
+        .onAppear { presentSetupGuideIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            presentSetupGuideIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            presentSetupGuideIfNeeded()
+        }
         .sheet(item: $editingAction) { action in
             ActionEditor(action: action, groups: store.groups) { store.upsert($0) }
         }
@@ -112,6 +128,8 @@ struct ContentView: View {
                     .help(L10n.tr("界面语言"))
                     Button(L10n.tr("扩展设置…")) { openSettings() }
                         .buttonStyle(.link)
+                    Button(L10n.tr("启用向导")) { showsSetupGuide = true }
+                        .buttonStyle(.link)
                     Menu {
                         Button(L10n.tr("导出配置…"), systemImage: "square.and.arrow.up") { exportConfiguration() }
                         Button(L10n.tr("导入配置…"), systemImage: "square.and.arrow.down") { importConfiguration() }
@@ -136,7 +154,7 @@ struct ContentView: View {
                     .textFieldStyle(.plain)
             }
             .padding(.horizontal, 11)
-            .frame(width: 260, height: 30)
+            .frame(minWidth: 140, idealWidth: 220, maxWidth: 260, minHeight: 30, maxHeight: 30)
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
             Toggle(L10n.tr("收藏显示在一级菜单"), isOn: Binding(
@@ -153,6 +171,11 @@ struct ContentView: View {
                 Label(L10n.tr("新建分组"), systemImage: "folder.badge.plus")
             }
 
+            Button {
+                showsMenuPreview = true
+            } label: {
+                Label(L10n.tr("菜单预览"), systemImage: "eye")
+            }
             addActionMenu
         }
         .padding(.horizontal, 28)
@@ -270,7 +293,17 @@ struct ContentView: View {
             Button(L10n.tr("终端…"), systemImage: "apple.terminal") { chooseApplication(kind: .terminal) }
             Button(L10n.tr("常用目录…"), systemImage: "folder") { chooseDirectory() }
             Divider()
-            Button(L10n.tr("文件模板"), systemImage: "doc.badge.plus") { editingAction = store.draft(for: .template) }
+            Menu {
+                ForEach(TemplatePreset.allCases) { preset in
+                    Button("\(preset.title) (.\(preset.fileExtension))") {
+                        editingAction = preset.makeAction(groups: store.groups)
+                    }
+                }
+                Divider()
+                Button(L10n.tr("自定义文本模板…")) { editingAction = store.draft(for: .template) }
+            } label: {
+                Label(L10n.tr("文件模板"), systemImage: "doc.badge.plus")
+            }
             Button(L10n.tr("Shell 脚本"), systemImage: "chevron.left.forwardslash.chevron.right") { editingAction = store.draft(for: .shell) }
             Button("AppleScript", systemImage: "applescript") { editingAction = store.draft(for: .appleScript) }
         } label: {
@@ -278,6 +311,16 @@ struct ContentView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    private func presentSetupGuideIfNeeded() {
+        guard !hasSeenSetupGuide, !showsSetupGuide,
+              NSApp.activationPolicy() == .regular,
+              let window = NSApp.keyWindow,
+              window.isVisible,
+              AppLanguage.allCases.map(\.appName).contains(window.title),
+              !showsUpdate, !showsMenuPreview, editingAction == nil, groupEditor == nil else { return }
+        showsSetupGuide = true
     }
 
     private var actionList: some View {
@@ -735,6 +778,16 @@ private struct ActionEditor: View {
         case .builtIn:
             Section(L10n.tr("基础动作")) {
                 LabeledContent(L10n.tr("操作"), value: builtInTitle)
+                if action.builtInOperation == .copyPath {
+                    Picker(L10n.tr("复制格式"), selection: $action.pathCopyFormat) {
+                        ForEach(PathCopyFormat.allCases) { format in
+                            Text(format.title).tag(format)
+                        }
+                    }
+                    Text(action.pathCopyFormat.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         case .application, .terminal:
             Section(action.kind.title) {

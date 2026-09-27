@@ -36,6 +36,7 @@ struct ActionStoreSmoke {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         try testRequestValidation(in: root)
+        try testShellQuotedPaths()
         try testPreparedExecution(in: root, defaults: defaults)
         try testSameDirectoryPaste(in: root, defaults: defaults)
         try testTemplatePathConfinement(in: root, defaults: defaults)
@@ -53,6 +54,23 @@ struct ActionStoreSmoke {
         try await testExecutionFeedback(in: root, defaults: defaults)
 
         print("宿主执行器测试通过")
+    }
+
+    private static func testShellQuotedPaths() throws {
+        let paths = ["/tmp/空 格/'quoted' $(printf BAD) `printf BAD` $HOME.txt", "/tmp/line\nbreak\\file.txt"]
+        let urls = paths.map { URL(fileURLWithPath: $0) }
+        let arguments = urls.map { PathCopyFormat.shellQuoted.text(for: [$0]) }.joined(separator: " ")
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", "printf '%s\\0' " + arguments]
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        precondition(process.terminationStatus == 0)
+        let actual = output.fileHandleForReading.readDataToEndOfFile()
+        let expected = Data((paths.joined(separator: "\0") + "\0").utf8)
+        precondition(actual == expected, "引号路径必须能作为单个 Shell 参数且不触发变量或命令展开")
     }
 
     private static func testExecutionSession() {

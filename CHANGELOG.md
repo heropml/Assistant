@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-27
+
+- 将启用向导和设置页的“重启应用”移至状态栏右侧、“刷新状态”左边，与启用状态同一行。
+- 保留重启确认、执行动作时禁用和状态说明。
+
+## 1.1.1 - 2026-09-27
+
+- 在启用向导和设置页增加“重启应用”，等待旧进程退出后从当前路径重新打开。
+- 运行中的动作会阻止重启；重启前提示保存编辑。
+- 将未检测到启用状态的提示与系统开关明确区分，避免误判。
+
+## 1.1.0 - 2026-09-27
+
+### 新增
+
+- 首次启用向导、Finder 扩展状态与菜单排查入口。
+- 基于样例的菜单预览，展示分组、收藏及动作隐藏原因。
+- TXT、Markdown、JSON、YAML、Shell、Python、HTML 文本模板预设。
+- 路径复制的 Shell 引号、相对路径、文件 URL、Markdown 链接和无扩展名格式；旧配置保留绝对路径默认行为。
+
 ### 文档与仓库
 
 - 规范项目介绍、安装说明、贡献指南及发布流程。
@@ -31,5 +51,7 @@
 - 配置、执行器、更新及中英文回归测试。
 - 主应用与 Finder 扩展的 Swift 6 严格并发类型检查。
 
-[Unreleased]: https://github.com/heropml/Assistant/compare/4be3c0c...HEAD
+[Unreleased]: https://github.com/heropml/Assistant/compare/v1.1.2...HEAD
 [1.0.0]: https://github.com/heropml/Assistant/commit/4be3c0c
+
+[1.1.2]: https://github.com/heropml/Assistant/releases/tag/v1.1.2

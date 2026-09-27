@@ -457,7 +457,7 @@ enum HostActionExecutor {
     ) throws {
         switch action.builtInOperation {
         case .copyPath:
-            try copy(urls.map(\.path).joined(separator: "\n"), to: pasteboard)
+            try copy(action.pathCopyFormat.text(for: urls), to: pasteboard)
         case .copyName:
             try copy(urls.map(\.lastPathComponent).joined(separator: "\n"), to: pasteboard)
         case .cut:

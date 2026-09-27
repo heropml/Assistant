@@ -3,7 +3,7 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-blue)](https://www.apple.com/macos/)
 [![Architecture](https://img.shields.io/badge/Apple%20Silicon-arm64-black)](#安装与启用)
 [![Swift](https://img.shields.io/badge/Swift-6-orange)](https://www.swift.org/)
-[![Version](https://img.shields.io/badge/version-1.0.0-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.2-green)](CHANGELOG.md)
 
 一个可配置的 macOS Finder 右键助手，支持文件操作、应用启动、文件模板及脚本，并提供中英文界面。
 
@@ -15,12 +15,12 @@ A configurable Finder context-menu utility for macOS, with file actions, app lau
 
 | 功能 | 说明 |
 | --- | --- |
-| 文件操作 | 复制路径、复制文件名、剪切、粘贴 |
+| 文件操作 | 复制路径（六种格式）、复制文件名、剪切、粘贴 |
 | 打开方式 | 从“应用程序”选择应用或终端，打开所选项目或常用目录 |
-| 文件模板 | 自定义扩展名和初始内容，新建时避免覆盖同名文件 |
+| 文件模板 | 内置 TXT、Markdown、JSON、YAML、Shell、Python、HTML 预设，可编辑内容；新建不覆盖同名文件 |
 | 脚本动作 | 执行 Shell 或 AppleScript，传入所选路径与当前目录 |
 | 上下文条件 | 按文件、文件夹、空白处、扩展名、选择数量和作用目录显示 |
-| 菜单管理 | 拖拽排序、分组、自定义 SF Symbol、一级收藏直达 |
+| 菜单管理 | 拖拽排序、分组、自定义 SF Symbol、一级收藏直达；样例预览及隐藏原因 |
 | 配置备份 | 导入、导出 JSON，导入前校验并确认替换 |
 | 执行反馈 | 显示运行任务及最近 20 条完成记录和失败详情 |
 | 中英文切换 | 主界面、Finder 菜单及应用名称支持中文和英文 |
@@ -57,6 +57,18 @@ cd Assistant
 点击主窗口右上角的地球图标，或在设置中选择“简体中文 / English”。界面及下一次打开的 Finder 菜单即时切换；Dock 和 macOS 系统菜单中的应用名称在退出并重新打开后刷新。
 
 中文名称为“右键助手”，英文名称为“Right-Click Assistant”。自定义动作名称、脚本、模板内容及已有配置不会因语言切换而改写。
+
+### 启用向导与菜单预览
+
+首次打开主窗口会显示启用向导，之后可从主窗口或设置重新打开。向导读取系统的 Finder 扩展开关状态；实际菜单是否可用，需要按引导在 Finder 中确认。目录检查只打开已有文件夹，不创建或修改文件。系统开关已开而状态未更新时，可在向导或设置页点击“重启应用”；有动作执行时不可重启，重启前请保存编辑。重启只重新打开当前应用，不会更改系统扩展开关。
+
+点击“菜单预览”，选择或拖入样例文件／文件夹，切换“选中文件或文件夹”和“文件夹空白处”上下文。预览展示一级收藏、分组及因禁用、类型、扩展名、数量、路径条件而隐藏的动作，不会执行动作。
+
+### 模板与路径格式
+
+在“添加动作 → 文件模板”选择预设，修改名称及内容后保存。动作以“新建 Markdown 文件”等名称显示，并默认加入已有的“文件”分组；该分组已删除时保持未分组。预设只创建文本文件，Shell 和 Python 文件不会自动执行。需要其他文本格式时选择“自定义文本模板”。
+
+编辑“复制路径”动作可选择绝对路径、Shell 引号路径、相对路径、文件 URL、Markdown 链接或无扩展名文件名。多选时逐行复制。相对路径以所选项目父目录的最近共同祖先为基准；单项使用其父目录。旧配置默认保持绝对路径格式。
 
 ### 配置与脚本
 
