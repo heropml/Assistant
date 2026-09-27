@@ -1,10 +1,10 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.2",
   "url_mac": [
-    "https://github.com/heropml/Assistant/releases/download/v1.0.0/RightClickAssistant_v1.0.0_arm64.dmg"
+    "https://github.com/heropml/Assistant/releases/download/v1.1.2/RightClickAssistant_v1.1.2_arm64.dmg"
   ],
   "arch_mac": "arm64",
-  "sha256_mac": "c4e20e37613f9593f12121e41570fa0539f96c48c7b460072acecfe869c7764d",
-  "size_mac": 2174161,
-  "notes": "中英文界面切换、本地化应用名称及 Finder 菜单。"
+  "sha256_mac": "ec31d344ac63cf7a1c41536a6d37a56e468fd4fa14b5f805058eb35294322ed5",
+  "size_mac": 2396652,
+  "notes": "新增启用向导、菜单预览、7 种文件模板与 6 种路径复制格式；重启应用按钮与状态同一行，保留重启确认和运行任务保护。"
 }
