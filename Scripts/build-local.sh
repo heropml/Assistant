@@ -15,7 +15,7 @@ xcodebuild \
   -project "${PROJECT_DIR}/RightClickAssistant.xcodeproj" \
   -scheme RightClickAssistant \
   -configuration Release \
-  -destination "platform=macOS" \
+  -destination "generic/platform=macOS" \
   -derivedDataPath "${DERIVED_DATA_DIR}" \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=NO \

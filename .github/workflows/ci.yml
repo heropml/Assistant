@@ -43,7 +43,7 @@ jobs:
           cat dist/latest.json
 
       - name: 上传安装包
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: RightClickAssistant-${{ github.sha }}
           path: |

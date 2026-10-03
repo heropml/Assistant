@@ -19,6 +19,7 @@
 - 一级收藏数量上限统一为共享常量。
 - `package-update.sh` 改用系统自带的 `shasum` 与 JavaScript for Automation 生成清单，不再依赖 Python。
 - 核心测试不再依赖系统语言为中文。
+- 构建脚本使用通用 macOS 构建目标，消除 xcodebuild 的多目标警告。
 - 将 `ContentView.swift` 拆分为动作行、动作编辑器和分组编辑器文件。
 
 ## [1.1.2] - 2026-09-27
