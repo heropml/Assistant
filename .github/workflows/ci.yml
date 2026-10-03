@@ -41,3 +41,14 @@ jobs:
             and (.notes == "CI 验证")
           ' dist/latest.json
           cat dist/latest.json
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v5
+        with:
+          name: RightClickAssistant-${{ github.sha }}
+          path: |
+            dist/RightClickAssistant_v*_arm64.dmg
+            dist/RightClickAssistant-macOS.zip
+            dist/latest.json
+          if-no-files-found: error
+          retention-days: 14
