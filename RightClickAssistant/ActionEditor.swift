@@ -203,8 +203,8 @@ struct ActionEditor: View {
         Binding(
             get: { action.effectiveScriptTimeout },
             set: { newValue in
-                let range = ConfiguredAction.scriptTimeoutRange
-                let clamped = min(max(newValue, range.lowerBound), range.upperBound)
+                action.scriptTimeout = newValue
+                let clamped = action.effectiveScriptTimeout
                 // Keep the default out of saved configurations.
                 action.scriptTimeout = clamped == ConfiguredAction.defaultScriptTimeout ? nil : clamped
             }
@@ -242,11 +242,15 @@ struct ActionEditor: View {
     }
 
     private var editorHeight: CGFloat {
-        switch action.kind {
+        let preferred: CGFloat = switch action.kind {
         case .shell, .appleScript: 820
         case .template: 760
         default: 650
         }
+        // Leave room for the sheet's title bar so Save stays reachable on small
+        // or scaled displays; the form scrolls when it is shorter than preferred.
+        let available = (NSScreen.main?.visibleFrame.height ?? preferred) - 60
+        return max(480, min(preferred, available))
     }
 
     private func save() {

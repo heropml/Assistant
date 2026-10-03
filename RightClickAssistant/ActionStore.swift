@@ -89,10 +89,12 @@ final class ActionStore: ObservableObject {
     @Published private(set) var recoveredConfigurationFromLastKnownGood: Bool
     @Published private(set) var executions: [ActionExecution] = []
     private var executionSession = ExecutionSession()
-    // Failures are also kept in `executions`. Show one alert at a time and
-    // summarize failures that arrive while it is open instead of stacking alerts.
+    // Show one alert at a time and summarize failures that arrive while it is
+    // open instead of stacking alerts. Keep their text: failures raised before
+    // an execution starts are not recorded in `executions`.
     private var isPresentingFailure = false
-    private var suppressedFailureCount = 0
+    private var suppressedFailures: [String] = []
+    private static let summarizedFailureLimit = 5
 
     private let defaults: UserDefaults
 
@@ -357,20 +359,31 @@ final class ActionStore: ObservableObject {
 
     private func presentFailure(_ message: String, detail: String) {
         guard !isPresentingFailure else {
-            suppressedFailureCount += 1
+            suppressedFailures.append(L10n.tr("%@：%@", message, detail))
             return
         }
         isPresentingFailure = true
         defer { isPresentingFailure = false }
         Self.showError(message, detail: detail)
-        while suppressedFailureCount > 0 {
-            let count = suppressedFailureCount
-            suppressedFailureCount = 0
-            Self.showError(
-                L10n.tr("另有 %@ 个动作执行失败", String(describing: count)),
-                detail: L10n.tr("失败详情已保存在执行记录中，可在主窗口或菜单栏查看。")
-            )
+        while !suppressedFailures.isEmpty {
+            let failures = suppressedFailures
+            suppressedFailures.removeAll()
+            Self.showError(Self.suppressedFailureTitle(count: failures.count), detail: Self.summary(of: failures))
         }
+    }
+
+    private static func suppressedFailureTitle(count: Int) -> String {
+        count == 1
+            ? L10n.tr("另有 1 个动作执行失败")
+            : L10n.tr("另有 %@ 个动作执行失败", String(describing: count))
+    }
+
+    private static func summary(of failures: [String]) -> String {
+        var lines = Array(failures.prefix(summarizedFailureLimit))
+        if failures.count > summarizedFailureLimit {
+            lines.append(L10n.tr("……以及另外 %@ 个", String(describing: failures.count - summarizedFailureLimit)))
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func showError(_ message: String, detail: String) {

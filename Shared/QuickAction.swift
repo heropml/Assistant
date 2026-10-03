@@ -956,13 +956,14 @@ extension ConfiguredAction {
     /// "Markdown File.md" instead of the stored Chinese title's name.
     func templateFileBaseName(language: AppLanguage) -> String {
         let name = displayTitle(language: language).trimmingCharacters(in: .whitespacesAndNewlines)
-        let stem: Substring
-        if name.hasPrefix("新建") {
-            stem = name.dropFirst(2)
+        let stem: String
+        if name.contains("新建") {
+            // Match earlier releases, which removed "新建" anywhere in the title.
+            stem = name.replacingOccurrences(of: "新建", with: "")
         } else if name.lowercased().hasPrefix("new ") {
-            stem = name.dropFirst(4)
+            stem = String(name.dropFirst(4))
         } else {
-            stem = Substring(name)
+            stem = name
         }
         return stem.trimmingCharacters(in: .whitespacesAndNewlines)
     }

@@ -169,8 +169,9 @@ enum UpdateClient {
 
     static let downloadDirectoryPrefix = "RightClickAssistantUpdate-"
 
-    /// Removes installer folders left by earlier downloads. A mounted DMG keeps
-    /// working after its file is removed, so this is safe to call before a check.
+    /// Removes installer folders left by earlier downloads. Called only when a
+    /// new download starts (off the main actor), never on a plain check, so an
+    /// installer that was just opened is not removed before it finishes mounting.
     static func removeStaleDownloads(
         in directory: URL = FileManager.default.temporaryDirectory,
         manager: FileManager = .default
@@ -241,8 +242,6 @@ final class UpdateManager: ObservableObject {
         release = nil
         state = .checking
         let id = operationID
-        // A new check forgets any previously downloaded installer.
-        UpdateClient.removeStaleDownloads()
         task = Task {
             do {
                 let manifest = try await UpdateClient.check()

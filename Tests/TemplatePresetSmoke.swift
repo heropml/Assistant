@@ -48,7 +48,8 @@ struct TemplatePresetSmoke {
             ("New Notes", "Notes", "Notes"),
             ("我的模板", "我的模板", "我的模板"),
             ("新建文件", "文件", "File"),
-            ("新建", "", "")
+            ("新建", "", ""),
+            ("周报新建", "周报", "周报")
         ] {
             let action = ConfiguredAction(kind: .template, title: title, templateExtension: "txt")
             precondition(action.templateFileBaseName(language: .simplifiedChinese) == chinese, "中文文件名错误：\(title)")

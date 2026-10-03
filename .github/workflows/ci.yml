@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # Pushes to PR branches are covered by pull_request; running both would
+  # build every PR commit twice on macOS runners.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
