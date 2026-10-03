@@ -65,6 +65,18 @@ struct UpdateSmoke {
         do { try UpdateClient.verify(file: file, manifest: manifest); preconditionFailure("未发现安装包过大") }
         catch UpdateError.sizeMismatch {}
 
+        let downloads = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UpdateCleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: downloads) }
+        let stale = downloads.appendingPathComponent(UpdateClient.downloadDirectoryPrefix + UUID().uuidString)
+        let unrelated = downloads.appendingPathComponent("Other-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        try Data("dmg".utf8).write(to: stale.appendingPathComponent("RightClickAssistant.dmg"))
+        UpdateClient.removeStaleDownloads(in: downloads)
+        precondition(!FileManager.default.fileExists(atPath: stale.path), "旧安装包目录未清理")
+        precondition(FileManager.default.fileExists(atPath: unrelated.path), "不应删除无关目录")
+
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ManifestProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -84,6 +96,6 @@ struct UpdateSmoke {
         slow.cancel()
         do { _ = try await slow.value; preconditionFailure("取消检查未生效") }
         catch is CancellationError {} catch let error as URLError { precondition(error.code == .cancelled) }
-        print("更新测试通过（版本比较、清单、HTTPS、校验、网络错误与取消）")
+        print("更新测试通过（版本比较、清单、HTTPS、校验、旧安装包清理、网络错误与取消）")
     }
 }

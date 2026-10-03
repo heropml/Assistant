@@ -45,6 +45,7 @@ struct ActionStoreSmoke {
         testScriptOutputIsBounded(in: root, defaults: defaults)
         testInfiniteOutputCannotBypassTimeout(in: root, defaults: defaults)
         testScriptTimeoutTerminatesChildren(in: root, defaults: defaults)
+        try testConfiguredScriptTimeout(in: root, defaults: defaults)
         testSortingPersistence(defaults: defaults)
         testExecutionSession()
         testCutBatchCoordination(defaults: defaults)
@@ -393,7 +394,9 @@ struct ActionStoreSmoke {
             preconditionFailure("大输出失败脚本不应成功")
         } catch let HostActionExecutor.ExecutionError.scriptFailed(message) {
             precondition(message.utf8.count <= 65_600)
-            precondition(message.contains("输出已截断"))
+            // The marker follows the interface language, which depends on the machine.
+            let marker = L10n.tr("\n（输出已截断）").trimmingCharacters(in: .whitespacesAndNewlines)
+            precondition(message.contains(marker), "截断输出缺少提示")
         } catch {
             preconditionFailure("大输出脚本返回了错误类型：\(error)")
         }
@@ -434,7 +437,7 @@ struct ActionStoreSmoke {
             wait "$direct"
             """#
         )
-        expectFailure(.scriptTimedOut) {
+        expectFailure(.scriptTimedOut(seconds: 1)) {
             try HostActionExecutor.execute(
                 action: script,
                 urls: [root],
@@ -458,7 +461,7 @@ struct ActionStoreSmoke {
             script: "yes"
         )
         let startedAt = ProcessInfo.processInfo.systemUptime
-        expectFailure(.scriptTimedOut) {
+        expectFailure(.scriptTimedOut(seconds: 1)) {
             try HostActionExecutor.execute(
                 action: script,
                 urls: [root],
@@ -469,6 +472,31 @@ struct ActionStoreSmoke {
         precondition(
             ProcessInfo.processInfo.systemUptime - startedAt < 2,
             "持续输出绕过了脚本超时"
+        )
+    }
+
+    private static func testConfiguredScriptTimeout(in root: URL, defaults: UserDefaults) throws {
+        precondition(ConfiguredAction(kind: .shell, title: "默认").effectiveScriptTimeout == 30)
+        precondition(ConfiguredAction(kind: .shell, title: "过小", scriptTimeout: 0).effectiveScriptTimeout == 1)
+        precondition(ConfiguredAction(kind: .shell, title: "过大", scriptTimeout: 99_999).effectiveScriptTimeout == 3_600)
+
+        let script = ConfiguredAction(kind: .shell, title: "动作超时", script: "/bin/sleep 5", scriptTimeout: 1)
+        let restored = try JSONDecoder().decode(ConfiguredAction.self, from: JSONEncoder().encode(script))
+        precondition(restored.scriptTimeout == 1, "脚本超时必须随配置保存")
+        let legacy = try JSONDecoder().decode(
+            ConfiguredAction.self,
+            from: Data(#"{"kind":"shell","title":"旧配置","script":"true"}"#.utf8)
+        )
+        precondition(legacy.scriptTimeout == nil && legacy.effectiveScriptTimeout == 30, "旧配置应使用默认超时")
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        expectFailure(.scriptTimedOut(seconds: 1)) {
+            try HostActionExecutor.execute(action: script, urls: [root], defaults: defaults)
+        }
+        precondition(ProcessInfo.processInfo.systemUptime - startedAt < 4, "未使用动作配置的超时")
+        precondition(
+            HostActionExecutor.ExecutionError.scriptTimedOut(seconds: 45).errorDescription?.contains("45") == true,
+            "超时提示应显示实际秒数"
         )
     }
 

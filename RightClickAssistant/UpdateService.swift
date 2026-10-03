@@ -167,10 +167,29 @@ enum UpdateClient {
         guard hash == manifest.sha256 else { throw UpdateError.checksumMismatch }
     }
 
+    static let downloadDirectoryPrefix = "RightClickAssistantUpdate-"
+
+    /// Removes installer folders left by earlier downloads. A mounted DMG keeps
+    /// working after its file is removed, so this is safe to call before a check.
+    static func removeStaleDownloads(
+        in directory: URL = FileManager.default.temporaryDirectory,
+        manager: FileManager = .default
+    ) {
+        guard let entries = try? manager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for entry in entries where entry.lastPathComponent.hasPrefix(downloadDirectoryPrefix) {
+            try? manager.removeItem(at: entry)
+        }
+    }
+
     static func download(_ manifest: UpdateManifest, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         #if !arch(arm64)
         guard manifest.architecture == "universal" else { throw UpdateError.wrongArchitecture }
         #endif
+        removeStaleDownloads()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 1800
@@ -187,7 +206,8 @@ enum UpdateClient {
                 try validateResponse(response)
                 try verify(file: temporary, manifest: manifest)
                 try Task.checkCancellation()
-                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("RightClickAssistantUpdate-\(UUID().uuidString)")
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(downloadDirectoryPrefix + UUID().uuidString)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let destination = directory.appendingPathComponent("RightClickAssistant.dmg")
                 do { try FileManager.default.moveItem(at: temporary, to: destination) }
@@ -221,6 +241,8 @@ final class UpdateManager: ObservableObject {
         release = nil
         state = .checking
         let id = operationID
+        // A new check forgets any previously downloaded installer.
+        UpdateClient.removeStaleDownloads()
         task = Task {
             do {
                 let manifest = try await UpdateClient.check()

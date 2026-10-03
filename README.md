@@ -66,7 +66,7 @@ cd Assistant
 
 ### 模板与路径格式
 
-在“添加动作 → 文件模板”选择预设，修改名称及内容后保存。动作以“新建 Markdown 文件”等名称显示，并默认加入已有的“文件”分组；该分组已删除时保持未分组。预设只创建文本文件，Shell 和 Python 文件不会自动执行。需要其他文本格式时选择“自定义文本模板”。
+在“添加动作 → 文件模板”选择预设，修改名称及内容后保存。动作以“新建 Markdown 文件”等名称显示，并默认加入已有的“文件”分组；该分组已删除时保持未分组。新文件名跟随界面语言，例如英文界面生成 `Markdown File.md`，中文界面生成 `Markdown 文件.md`；同名文件存在时自动编号。预设只创建文本文件，Shell 和 Python 文件不会自动执行。需要其他文本格式时选择“自定义文本模板”。
 
 编辑“复制路径”动作可选择绝对路径、Shell 引号路径、相对路径、文件 URL、Markdown 链接或无扩展名文件名。多选时逐行复制。相对路径以所选项目父目录的最近共同祖先为基准；单项使用其父目录。旧配置默认保持绝对路径格式。
 
@@ -76,6 +76,8 @@ cd Assistant
 - 旧配置会迁移到当前配置格式（V3）。
 - Shell 由 `zsh` 执行，所选路径通过位置参数传入，当前目录通过 `$RCA_DIRECTORY` 提供。
 - AppleScript 由 `osascript` 执行，所选路径传入 `on run argv`。
+- 脚本默认 30 秒超时，可在动作编辑器中设为 1–3600 秒；超时后会停止脚本及其子进程。
+- 执行失败时弹出提示；多个动作同时失败会合并为一条提示，详情见执行记录。
 
 ### 检查更新
 
@@ -112,6 +114,8 @@ DEVELOPER_DIR=/Library/Developer/CommandLineTools ./Scripts/test-core.sh
 ```sh
 ./Scripts/verify-local.sh
 ```
+
+每次推送和 Pull Request 都会由 GitHub Actions 在 macOS 26（Xcode 26）上运行 `verify-local.sh` 和 `package-update.sh`，并校验生成的更新清单。
 
 ## 发布与协作
 

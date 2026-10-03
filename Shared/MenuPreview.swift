@@ -58,12 +58,12 @@ struct MenuPreviewSnapshot {
 
     init(configuration: AssistantConfiguration, urls: [URL], isContainer: Bool) {
         let context = ActionMatchContext(urls: urls, isContainer: isContainer)
-        // Keep visibility and the six top-level favorites identical to FinderSync.
+        // Keep visibility and the top-level favorites identical to FinderSync.
         let applicable = configuration.actions.filter {
             $0.isEnabled && $0.conditions.matches(context: context)
         }
         favorites = configuration.showsFavoritesAtTopLevel
-            ? Array(applicable.filter(\.isFavorite).prefix(6)) : []
+            ? Array(applicable.filter(\.isFavorite).prefix(AssistantConfiguration.maximumTopLevelFavorites)) : []
         let favoriteIDs = Set(favorites.map(\.id))
         let remaining = applicable.filter { !favoriteIDs.contains($0.id) }
         var sections: [Section] = configuration.groups.compactMap { group in

@@ -25,6 +25,10 @@ final class FinderSync: FIFinderSync {
     private let configurationCache = SharedConfigurationCache()
     private var menuActionContexts: [Int: MenuActionContext] = [:]
     private var nextMenuActionTag = 1
+    // Menus are rebuilt on every right-click. Reuse tinted symbols, app icons
+    // and bundled artwork instead of re-rendering them each time.
+    private var imageCache: [String: NSImage] = [:]
+    private static let imageCacheLimit = 256
 
     override init() {
         super.init()
@@ -75,7 +79,7 @@ final class FinderSync: FIFinderSync {
     override var toolbarItemName: String { L10n.tr("右键助手") }
     override var toolbarItemToolTip: String { L10n.tr("常用 Finder 操作") }
     override var toolbarItemImage: NSImage {
-        brandImage(pointSize: 20)
+        brandImage(pointSize: 20, language: .current)
     }
 
     override func menu(for menuKind: FIMenuKind) -> NSMenu? {
@@ -90,11 +94,14 @@ final class FinderSync: FIFinderSync {
         // action payload in this principal object and send only the integer tag.
         menuActionContexts.removeAll(keepingCapacity: true)
 
-        SharedPreferences.defaults.synchronize()
         let context = targetContext(for: menuKind)
         let urls = context.urls
         let isContainer = context.isContainer
+        // The cache synchronizes the shared defaults before comparing data.
         let configuration = configurationCache.configuration()
+        // Read the language once; every title below would otherwise look it up again.
+        let language = AppLanguage.current
+        let brandTitle = L10n.text("右键助手", language: language)
         let matchContext = ActionMatchContext(urls: urls, isContainer: isContainer)
         let applicable = configuration.actions.filter { $0.isEnabled && $0.conditions.matches(context: matchContext) }
         finderLog.info(
@@ -103,14 +110,14 @@ final class FinderSync: FIFinderSync {
         guard !applicable.isEmpty else { return nil }
 
         let favorites = configuration.showsFavoritesAtTopLevel
-            ? Array(applicable.filter(\.isFavorite).prefix(6))
+            ? Array(applicable.filter(\.isFavorite).prefix(AssistantConfiguration.maximumTopLevelFavorites))
             : []
         let favoriteIDs = Set(favorites.map(\.id))
         let remaining = applicable.filter { !favoriteIDs.contains($0.id) }
-        let root = NSMenu(title: L10n.tr("右键助手"))
+        let root = NSMenu(title: brandTitle)
 
         for action in favorites {
-            root.addItem(menuItem(for: action, urls: urls, isContainer: isContainer))
+            root.addItem(menuItem(for: action, urls: urls, isContainer: isContainer, language: language))
         }
 
         if !favorites.isEmpty && !remaining.isEmpty {
@@ -118,13 +125,14 @@ final class FinderSync: FIFinderSync {
         }
 
         if !remaining.isEmpty {
-            let assistantItem = NSMenuItem(title: L10n.tr("右键助手"), action: nil, keyEquivalent: "")
-            assistantItem.image = brandImage(pointSize: 16)
+            let assistantItem = NSMenuItem(title: brandTitle, action: nil, keyEquivalent: "")
+            assistantItem.image = brandImage(pointSize: 16, language: language)
             let submenu = buildSubmenu(
                 actions: remaining,
                 groups: configuration.groups,
                 urls: urls,
-                isContainer: isContainer
+                isContainer: isContainer,
+                language: language
             )
             root.addItem(assistantItem)
             root.setSubmenu(submenu, for: assistantItem)
@@ -182,9 +190,10 @@ final class FinderSync: FIFinderSync {
         actions: [ConfiguredAction],
         groups: [ActionGroup],
         urls: [URL],
-        isContainer: Bool
+        isContainer: Bool,
+        language: AppLanguage
     ) -> NSMenu {
-        let submenu = NSMenu(title: L10n.tr("右键助手"))
+        let submenu = NSMenu(title: L10n.text("右键助手", language: language))
         var hasRenderedSection = false
 
         for group in groups {
@@ -193,16 +202,17 @@ final class FinderSync: FIFinderSync {
             if hasRenderedSection {
                 submenu.addItem(.separator())
             }
-            let groupItem = NSMenuItem(title: group.localizedTitle, action: nil, keyEquivalent: "")
+            let groupTitle = group.displayTitle(language: language)
+            let groupItem = NSMenuItem(title: groupTitle, action: nil, keyEquivalent: "")
             groupItem.image = cyberSymbolImage(
                 named: group.symbolName,
                 fallbackName: "folder.fill",
-                description: group.localizedTitle
+                description: groupTitle
             )
             groupItem.isEnabled = false
             submenu.addItem(groupItem)
             for action in groupActions {
-                submenu.addItem(menuItem(for: action, urls: urls, isContainer: isContainer))
+                submenu.addItem(menuItem(for: action, urls: urls, isContainer: isContainer, language: language))
             }
             hasRenderedSection = true
         }
@@ -213,14 +223,20 @@ final class FinderSync: FIFinderSync {
                 submenu.addItem(.separator())
             }
             for action in ungroupedActions {
-                submenu.addItem(menuItem(for: action, urls: urls, isContainer: isContainer))
+                submenu.addItem(menuItem(for: action, urls: urls, isContainer: isContainer, language: language))
             }
         }
         return submenu
     }
 
-    private func menuItem(for action: ConfiguredAction, urls: [URL], isContainer: Bool) -> NSMenuItem {
-        let item = NSMenuItem(title: action.localizedTitle, action: #selector(performAction(_:)), keyEquivalent: "")
+    private func menuItem(
+        for action: ConfiguredAction,
+        urls: [URL],
+        isContainer: Bool,
+        language: AppLanguage
+    ) -> NSMenuItem {
+        let title = action.displayTitle(language: language)
+        let item = NSMenuItem(title: title, action: #selector(performAction(_:)), keyEquivalent: "")
         // Finder owns the menu UI, but actions must be delivered back to this
         // extension instance. Without an explicit target Finder only dismisses
         // the menu and never enters the selector.
@@ -229,14 +245,14 @@ final class FinderSync: FIFinderSync {
         nextMenuActionTag += 1
         menuActionContexts[tag] = MenuActionContext(action: action, urls: urls, isContainer: isContainer)
         item.tag = tag
-        item.image = menuImage(for: action)
+        item.image = menuImage(for: action, description: title)
         return item
     }
 
-    private func menuImage(for action: ConfiguredAction) -> NSImage? {
+    private func menuImage(for action: ConfiguredAction, description: String) -> NSImage? {
         let configuredName = action.symbolName.trimmingCharacters(in: .whitespacesAndNewlines)
         if let assetName = bundledDefaultActionImageName(for: action, configuredName: configuredName),
-           let image = bundledActionImage(named: assetName, description: action.localizedTitle) {
+           let image = bundledActionImage(named: assetName, description: description) {
             return image
         }
 
@@ -244,22 +260,44 @@ final class FinderSync: FIFinderSync {
         if usesDefaultSymbol,
            (action.kind == .application || action.kind == .terminal),
            let applicationURL = action.installedApplicationURL() {
-            let source = NSWorkspace.shared.icon(forFile: applicationURL.path)
-            let image = (source.copy() as? NSImage) ?? source
-            image.size = NSSize(width: 16, height: 16)
-            image.accessibilityDescription = action.localizedTitle
-            return image
+            return cachedImage("app|\(applicationURL.path)|\(description)") {
+                let source = NSWorkspace.shared.icon(forFile: applicationURL.path)
+                let image = (source.copy() as? NSImage) ?? source
+                image.size = NSSize(width: 16, height: 16)
+                image.accessibilityDescription = description
+                return image
+            }
         }
 
         let symbolName = configuredName.isEmpty ? action.kind.symbolName : configuredName
         return cyberSymbolImage(
             named: symbolName,
             fallbackName: action.kind.symbolName,
-            description: action.localizedTitle
+            description: description
         )
     }
 
+    private func cachedImage(_ key: String, make: () -> NSImage?) -> NSImage? {
+        if let cached = imageCache[key] { return cached }
+        guard let image = make() else { return nil }
+        if imageCache.count >= Self.imageCacheLimit {
+            imageCache.removeAll(keepingCapacity: true)
+        }
+        imageCache[key] = image
+        return image
+    }
+
     private func cyberSymbolImage(
+        named name: String,
+        fallbackName: String,
+        description: String
+    ) -> NSImage? {
+        cachedImage("symbol|\(name)|\(fallbackName)|\(description)") {
+            renderCyberSymbolImage(named: name, fallbackName: fallbackName, description: description)
+        }
+    }
+
+    private func renderCyberSymbolImage(
         named name: String,
         fallbackName: String,
         description: String
@@ -299,33 +337,39 @@ final class FinderSync: FIFinderSync {
     }
 
     private func bundledActionImage(named name: String, description: String) -> NSImage? {
-        guard !name.isEmpty,
-              let source = Bundle(for: FinderSync.self).image(forResource: NSImage.Name(name)) else {
-            return nil
+        guard !name.isEmpty else { return nil }
+        return cachedImage("asset|\(name)|\(description)") {
+            guard let source = Bundle(for: FinderSync.self).image(forResource: NSImage.Name(name)) else {
+                return nil
+            }
+            let image = (source.copy() as? NSImage) ?? source
+            image.size = NSSize(width: 16, height: 16)
+            // Action artwork is intentionally multicolour. Marking it as a template makes
+            // AppKit discard the cyan/magenta cyber palette and render a monochrome mask.
+            image.isTemplate = false
+            image.accessibilityDescription = description
+            return image
         }
-        let image = (source.copy() as? NSImage) ?? source
-        image.size = NSSize(width: 16, height: 16)
-        // Action artwork is intentionally multicolour. Marking it as a template makes
-        // AppKit discard the cyan/magenta cyber palette and render a monochrome mask.
-        image.isTemplate = false
-        image.accessibilityDescription = description
-        return image
     }
 
-    private func brandImage(pointSize: CGFloat) -> NSImage {
-        let assetName = NSImage.Name("AssistantMark")
-        let source = Bundle(for: FinderSync.self).image(forResource: assetName)
-            ?? NSImage(named: assetName)
-            ?? NSImage(
-                systemSymbolName: "cursorarrow.click.2",
-                accessibilityDescription: L10n.tr("右键助手")
-            )
-            ?? NSImage()
-        let image = (source.copy() as? NSImage) ?? source
-        image.size = NSSize(width: pointSize, height: pointSize)
-        image.isTemplate = true
-        image.accessibilityDescription = L10n.tr("右键助手")
-        return image
+    private func brandImage(pointSize: CGFloat, language: AppLanguage) -> NSImage {
+        let description = L10n.text("右键助手", language: language)
+        let cached = cachedImage("brand|\(pointSize)|\(description)") {
+            let assetName = NSImage.Name("AssistantMark")
+            let source = Bundle(for: FinderSync.self).image(forResource: assetName)
+                ?? NSImage(named: assetName)
+                ?? NSImage(
+                    systemSymbolName: "cursorarrow.click.2",
+                    accessibilityDescription: description
+                )
+                ?? NSImage()
+            let image = (source.copy() as? NSImage) ?? source
+            image.size = NSSize(width: pointSize, height: pointSize)
+            image.isTemplate = true
+            image.accessibilityDescription = description
+            return image
+        }
+        return cached ?? NSImage()
     }
 
     private func targetContext(for menuKind: FIMenuKind) -> (urls: [URL], isContainer: Bool) {

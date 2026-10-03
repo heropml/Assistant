@@ -89,6 +89,10 @@ final class ActionStore: ObservableObject {
     @Published private(set) var recoveredConfigurationFromLastKnownGood: Bool
     @Published private(set) var executions: [ActionExecution] = []
     private var executionSession = ExecutionSession()
+    // Failures are also kept in `executions`. Show one alert at a time and
+    // summarize failures that arrive while it is open instead of stacking alerts.
+    private var isPresentingFailure = false
+    private var suppressedFailureCount = 0
 
     private let defaults: UserDefaults
 
@@ -118,7 +122,10 @@ final class ActionStore: ObservableObject {
     var enabledCount: Int { actions.filter(\.isEnabled).count }
     var favoriteCount: Int {
         guard configuration.showsFavoritesAtTopLevel else { return 0 }
-        return min(actions.filter { $0.isEnabled && $0.isFavorite }.count, 6)
+        return min(
+            actions.filter { $0.isEnabled && $0.isFavorite }.count,
+            AssistantConfiguration.maximumTopLevelFavorites
+        )
     }
 
     func upsert(_ action: ConfiguredAction) {
@@ -271,7 +278,7 @@ final class ActionStore: ObservableObject {
             prepared = try HostActionExecutor.prepareExecution(from: url, defaults: defaults)
         } catch let error as HostActionExecutor.ExecutionError {
             if error != .invalidRequest {
-                Self.showError(L10n.tr("无法执行动作"), detail: error.localizedDescription)
+                presentFailure(L10n.tr("无法执行动作"), detail: error.localizedDescription)
             }
             finishExecution(executionID)
             return
@@ -293,7 +300,7 @@ final class ActionStore: ObservableObject {
                 try HostActionExecutor.execute(action: prepared.action, urls: prepared.urls, defaults: defaults)
             } catch {
                 recordFailure(executionID, error: error)
-                Self.showError(L10n.tr("动作执行失败"), detail: error.localizedDescription)
+                presentFailure(L10n.tr("动作执行失败"), detail: error.localizedDescription)
             }
             finishExecution(executionID)
             return
@@ -305,7 +312,7 @@ final class ActionStore: ObservableObject {
                 }.value
             } catch {
                 recordFailure(executionID, error: error)
-                Self.showError(L10n.tr("动作执行失败"), detail: error.localizedDescription)
+                presentFailure(L10n.tr("动作执行失败"), detail: error.localizedDescription)
             }
             finishExecution(executionID)
         }
@@ -346,6 +353,24 @@ final class ActionStore: ObservableObject {
         guard SharedPreferences.saveConfiguration(configuration, defaults: defaults) else { return }
         configurationLoadIssue = nil
         recoveredConfigurationFromLastKnownGood = false
+    }
+
+    private func presentFailure(_ message: String, detail: String) {
+        guard !isPresentingFailure else {
+            suppressedFailureCount += 1
+            return
+        }
+        isPresentingFailure = true
+        defer { isPresentingFailure = false }
+        Self.showError(message, detail: detail)
+        while suppressedFailureCount > 0 {
+            let count = suppressedFailureCount
+            suppressedFailureCount = 0
+            Self.showError(
+                L10n.tr("另有 %@ 个动作执行失败", String(describing: count)),
+                detail: L10n.tr("失败详情已保存在执行记录中，可在主窗口或菜单栏查看。")
+            )
+        }
     }
 
     private static func showError(_ message: String, detail: String) {
@@ -410,9 +435,10 @@ enum HostActionExecutor {
         urls: [URL],
         defaults: UserDefaults = SharedPreferences.defaults,
         revealCreatedFiles: Bool = true,
-        scriptTimeout: DispatchTimeInterval = .seconds(30),
+        scriptTimeout: DispatchTimeInterval? = nil,
         pasteboard: NSPasteboard = .general
     ) throws {
+        let scriptTimeout = scriptTimeout ?? .seconds(action.effectiveScriptTimeout)
         switch action.kind {
         case .builtIn:
             try executeBuiltIn(action, urls: urls, defaults: defaults, pasteboard: pasteboard)
@@ -519,8 +545,11 @@ enum HostActionExecutor {
     ) throws {
         let safeDirectory = try validatedDirectory(directory)
         let ext = sanitizedFileComponent(action.normalizedTemplateExtension, fallback: "txt")
-        let name = action.title.replacingOccurrences(of: "新建", with: "")
-        let baseName = sanitizedFileComponent(name, fallback: "未命名文稿")
+        let language = AppLanguage.current
+        let baseName = sanitizedFileComponent(
+            action.templateFileBaseName(language: language),
+            fallback: L10n.text("未命名文稿", language: language)
+        )
         let manager = FileManager.default
         let contents = Data((action.templateContent ?? "").utf8)
         let target: URL
@@ -597,7 +626,8 @@ enum HostActionExecutor {
         )
         try? pipe.write.close()
 
-        let deadline = DispatchTime.now() + timeout
+        let startedAt = DispatchTime.now()
+        let deadline = startedAt + timeout
         var status: Int32 = 0
         var outputReachedEnd = false
         while true {
@@ -634,7 +664,9 @@ enum HostActionExecutor {
                 if !outputReachedEnd {
                     _ = try? drainAvailableOutput(from: readFileDescriptor, into: collector)
                 }
-                throw ExecutionError.scriptTimedOut
+                let limit = deadline.uptimeNanoseconds - startedAt.uptimeNanoseconds
+                let seconds = limit / 1_000_000_000 + (limit % 1_000_000_000 == 0 ? 0 : 1)
+                throw ExecutionError.scriptTimedOut(seconds: Int(max(1, seconds)))
             }
 
             let delay = pollingDelayMilliseconds(now: now, deadline: deadline.uptimeNanoseconds)
@@ -907,7 +939,7 @@ enum HostActionExecutor {
         case pasteInProgress
         case emptyScript
         case scriptFailed(String)
-        case scriptTimedOut
+        case scriptTimedOut(seconds: Int)
         case invalidRequest
         case actionDisabled
         case conditionsNotMet
@@ -927,7 +959,7 @@ enum HostActionExecutor {
             case .pasteInProgress: L10n.tr("上一次粘贴仍在进行，请完成后再试。")
             case .emptyScript: L10n.tr("脚本内容为空。")
             case let .scriptFailed(message): L10n.tr("脚本执行失败：%@", String(describing: message))
-            case .scriptTimedOut: L10n.tr("脚本执行超过 30 秒，已停止脚本进程组。")
+            case let .scriptTimedOut(seconds): L10n.tr("脚本执行超过 %@ 秒，已停止脚本进程组。", String(describing: seconds))
             case .invalidRequest: L10n.tr("执行请求无效。")
             case .actionDisabled: L10n.tr("该动作已被停用。")
             case .conditionsNotMet: L10n.tr("当前文件或目录不符合动作执行条件。")

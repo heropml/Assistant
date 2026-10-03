@@ -260,6 +260,11 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
     var templateExtension: String?
     var templateContent: String?
     var script: String?
+    /// Seconds before a script's process group is stopped; nil uses the default.
+    var scriptTimeout: Int?
+
+    static let defaultScriptTimeout = 30
+    static let scriptTimeoutRange = 1...3_600
 
     init(
         id: String = UUID().uuidString,
@@ -276,7 +281,8 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         bundleIdentifier: String? = nil,
         templateExtension: String? = nil,
         templateContent: String? = nil,
-        script: String? = nil
+        script: String? = nil,
+        scriptTimeout: Int? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -293,6 +299,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         self.templateExtension = templateExtension
         self.templateContent = templateContent
         self.script = script
+        self.scriptTimeout = scriptTimeout
     }
 
     init(from decoder: Decoder) throws {
@@ -312,6 +319,7 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         templateExtension = try container.decodeIfPresent(String.self, forKey: .templateExtension)
         templateContent = try container.decodeIfPresent(String.self, forKey: .templateContent)
         script = try container.decodeIfPresent(String.self, forKey: .script)
+        scriptTimeout = try container.decodeIfPresent(Int.self, forKey: .scriptTimeout)
     }
 
     var detail: String {
@@ -331,6 +339,11 @@ struct ConfiguredAction: Codable, Identifiable, Equatable, Sendable {
         case .shell: L10n.tr("通过 zsh 执行；所选路径作为位置参数传入")
         case .appleScript: L10n.tr("通过 osascript 执行；所选路径作为参数传入")
         }
+    }
+
+    var effectiveScriptTimeout: Int {
+        let range = Self.scriptTimeoutRange
+        return min(max(scriptTimeout ?? Self.defaultScriptTimeout, range.lowerBound), range.upperBound)
     }
 
     var normalizedTemplateExtension: String {
@@ -375,6 +388,7 @@ struct ActionGroup: Codable, Identifiable, Equatable, Sendable {
 
 struct AssistantConfiguration: Codable, Equatable, Sendable {
     static let currentVersion = 3
+    static let maximumTopLevelFavorites = 6
 
     var version: Int
     var actions: [ConfiguredAction]
@@ -610,9 +624,15 @@ enum SharedPreferences {
     private static let legacyOrderedActionIDsKey = "orderedActionIDs"
     private static let legacyApplicationActionsKey = "applicationActions"
 
-    static var defaults: UserDefaults {
-        UserDefaults(suiteName: suiteName) ?? .standard
+    // Localized strings read the language from this suite on every lookup, so
+    // create the UserDefaults object once instead of once per access.
+    private final class DefaultsBox: @unchecked Sendable {
+        let value = UserDefaults(suiteName: SharedPreferences.suiteName) ?? .standard
     }
+
+    private static let sharedDefaults = DefaultsBox()
+
+    static var defaults: UserDefaults { sharedDefaults.value }
 
     static func configuration(defaults: UserDefaults = defaults) -> AssistantConfiguration {
         loadConfiguration(defaults: defaults).configuration
@@ -929,6 +949,22 @@ extension ConfiguredAction {
             if title == "打开 \(name)" { return L10n.text("打开 %@", arguments: [name], language: language) }
         }
         return title
+    }
+
+    /// File name stem for a template action. It follows the title shown in
+    /// `language`, so the English menu item "New Markdown File" creates
+    /// "Markdown File.md" instead of the stored Chinese title's name.
+    func templateFileBaseName(language: AppLanguage) -> String {
+        let name = displayTitle(language: language).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem: Substring
+        if name.hasPrefix("新建") {
+            stem = name.dropFirst(2)
+        } else if name.lowercased().hasPrefix("new ") {
+            stem = name.dropFirst(4)
+        } else {
+            stem = Substring(name)
+        }
+        return stem.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

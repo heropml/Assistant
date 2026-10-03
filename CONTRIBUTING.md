@@ -8,7 +8,7 @@
 
 1. 从最新 `main` 创建分支，保持每次修改聚焦一个问题。
 2. 使用支持 Swift 6 的 Xcode，按照 README 构建和启用 Finder 扩展。
-3. 涉及行为变化时补充必要的回归测试，运行 `./Scripts/test-core.sh`。
+3. 涉及行为变化时补充必要的回归测试，运行 `./Scripts/test-core.sh`。推送后 GitHub Actions 会运行完整验证，请确保通过。
 4. 涉及界面时检查中英文布局；涉及 Finder 时验证文件、文件夹和空白处菜单。
 5. 提交前运行 `git diff --check`，不要提交 `dist/`、构建缓存或本机配置。
 

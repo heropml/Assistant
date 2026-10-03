@@ -28,6 +28,33 @@ struct TemplatePresetSmoke {
             renamed.title = "我的模板"
             precondition(renamed.displayTitle(language: .english) == "我的模板")
         }
+        let expectedFileNames: [TemplatePreset: (String, String)] = [
+            .plainText: ("文本文件", "Text File"),
+            .markdown: ("Markdown 文件", "Markdown File"),
+            .json: ("JSON 文件", "JSON File"),
+            .yaml: ("YAML 文件", "YAML File"),
+            .shell: ("Shell 文件", "Shell File"),
+            .python: ("Python 文件", "Python File"),
+            .html: ("HTML 文件", "HTML File")
+        ]
+        for preset in TemplatePreset.allCases {
+            let action = preset.makeAction()
+            let names = expectedFileNames[preset]!
+            precondition(action.templateFileBaseName(language: .simplifiedChinese) == names.0)
+            precondition(action.templateFileBaseName(language: .english) == names.1, "英文界面不应生成中文文件名")
+        }
+        for (title, chinese, english) in [
+            ("新建文稿", "文稿", "文稿"),
+            ("New Notes", "Notes", "Notes"),
+            ("我的模板", "我的模板", "我的模板"),
+            ("新建文件", "文件", "File"),
+            ("新建", "", "")
+        ] {
+            let action = ConfiguredAction(kind: .template, title: title, templateExtension: "txt")
+            precondition(action.templateFileBaseName(language: .simplifiedChinese) == chinese, "中文文件名错误：\(title)")
+            precondition(action.templateFileBaseName(language: .english) == english, "英文文件名错误：\(title)")
+        }
+
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AssistantTemplates-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
