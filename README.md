@@ -3,7 +3,7 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-blue)](https://www.apple.com/macos/)
 [![Architecture](https://img.shields.io/badge/Apple%20Silicon-arm64-black)](#安装与启用)
 [![Swift](https://img.shields.io/badge/Swift-6-orange)](https://www.swift.org/)
-[![Version](https://img.shields.io/badge/version-1.1.2-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.3-green)](CHANGELOG.md)
 
 一个可配置的 macOS Finder 右键助手，支持文件操作、应用启动、文件模板及脚本，并提供中英文界面。
 

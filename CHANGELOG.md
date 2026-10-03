@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-03
+
 ### 新增
 
 - 脚本动作可单独设置超时（1–3600 秒，默认 30 秒），超时提示显示实际秒数。
@@ -14,12 +16,13 @@
 - 英文界面下新建的模板文件使用英文文件名（如 `Markdown File.md`），不再使用中文名称。
 - 共享偏好对象只创建一次，避免每次读取界面文案都新建 `UserDefaults`。
 - Finder 菜单每次构建只读取一次界面语言，并缓存图标，避免每次右键都重新生成图标。
-- 多个动作同时失败时合并为一条提示，不再连续弹出多个对话框。
-- 检查或下载更新前清理旧的安装包临时目录。
+- 多个动作同时失败时合并为一条提示，不再连续弹出多个对话框；汇总提示列出其余失败的原因。
+- 开始下载新安装包前在后台清理旧的安装包临时目录，不会删除刚打开的安装包。
 - 一级收藏数量上限统一为共享常量。
 - `package-update.sh` 改用系统自带的 `shasum` 与 JavaScript for Automation 生成清单，不再依赖 Python。
 - 核心测试不再依赖系统语言为中文。
 - 构建脚本使用通用 macOS 构建目标，消除 xcodebuild 的多目标警告。
+- 动作编辑窗口高度不超过屏幕可用高度，小屏幕上也能看到“保存”按钮。
 - 将 `ContentView.swift` 拆分为动作行、动作编辑器和分组编辑器文件。
 
 ## [1.1.2] - 2026-09-27
@@ -69,7 +72,8 @@
 - 配置、执行器、更新及中英文回归测试。
 - 主应用与 Finder 扩展的 Swift 6 严格并发类型检查。
 
-[Unreleased]: https://github.com/heropml/Assistant/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/heropml/Assistant/compare/v1.1.3...HEAD
 [1.0.0]: https://github.com/heropml/Assistant/commit/4be3c0c
 
+[1.1.3]: https://github.com/heropml/Assistant/releases/tag/v1.1.3
 [1.1.2]: https://github.com/heropml/Assistant/releases/tag/v1.1.2
